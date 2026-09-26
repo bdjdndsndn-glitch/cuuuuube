@@ -1,0 +1,494 @@
+@import "tailwindcss";
+
+/* Гра масштабує html font-size динамічно, тому rem-одиниці Tailwind переводимо у px */
+@theme {
+  --spacing: 4px;
+  --text-xs: 12px;
+  --text-sm: 14px;
+  --text-base: 16px;
+  --text-lg: 18px;
+  --text-xl: 20px;
+  --text-2xl: 24px;
+  --text-3xl: 30px;
+  --text-4xl: 36px;
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-xl: 12px;
+  --radius-2xl: 16px;
+  --radius-3xl: 24px;
+  --container-xs: 320px;
+  --container-sm: 384px;
+  --container-md: 448px;
+  --container-lg: 512px;
+  --tracking-tight: -0.4px;
+  --tracking-wider: 0.8px;
+}
+
+#root {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 20;
+  font-size: 16px;
+  line-height: 1.5;
+  font-family: 'Montserrat', system-ui, sans-serif;
+  text-transform: none;
+}
+
+#root *,
+#root *::before,
+#root *::after {
+  box-sizing: border-box;
+}
+
+/* Забезпечуємо інтерактивність і плавне зникнення фрази на початку гри */
+.text--note {
+  cursor: pointer;
+  pointer-events: auto !important;
+  user-select: none;
+  transition: opacity 0.3s ease;
+}
+
+/* Коли гра активна, фраза та заголовок гарантовано зникають */
+.ui--playing .text--note,
+.ui--playing .text--title {
+  display: none !important;
+  opacity: 0 !important;
+  visibility: hidden !important;
+  pointer-events: none !important;
+}
+
+/* Комфортні відступи блоку налаштувань для вміщення 6 повзунків */
+.ui__prefs {
+  padding-top: 1.5em;
+  padding-bottom: 1.5em;
+  overflow-y: auto !important;
+  -webkit-overflow-scrolling: touch;
+}
+
+.ui__prefs .range:not(:last-child) {
+  margin-bottom: 1.35em !important;
+}
+
+/* Інтерактивні мітки списку значень повзунків */
+.range__list div {
+  cursor: pointer;
+  touch-action: manipulation;
+  user-select: none;
+}
+
+/* TON Connect modal widget overlay */
+#tc-widget-root {
+  position: relative;
+  z-index: 99999 !important;
+  text-transform: none;
+  font-size: 16px;
+  line-height: 1.5;
+}
+
+/* Нативні кнопки гри THE CUBE: адаптивні відступи безпечної зони для Telegram Mini App */
+.btn--tl {
+  top: max(0.8em, env(safe-area-inset-top, 0.8em)) !important;
+  left: max(0.8em, env(safe-area-inset-left, 0.8em)) !important;
+}
+
+.btn--tr {
+  top: max(0.8em, env(safe-area-inset-top, 0.8em)) !important;
+  right: max(0.8em, env(safe-area-inset-right, 0.8em)) !important;
+}
+
+.btn--bl {
+  bottom: max(0.8em, env(safe-area-inset-bottom, 0.8em)) !important;
+  left: max(0.8em, env(safe-area-inset-left, 0.8em)) !important;
+}
+
+.btn--br {
+  bottom: max(0.8em, env(safe-area-inset-bottom, 0.8em)) !important;
+  right: max(0.8em, env(safe-area-inset-right, 0.8em)) !important;
+}
+
+/* Нижній ряд: статистика · гаманець · профіль · налаштування — рівномірно */
+.btn--bcl,
+.btn--bcr {
+  bottom: max(0.8em, env(safe-area-inset-bottom, 0.8em)) !important;
+}
+
+.btn--bcl {
+  left: calc(0.8em + (100% - 2.6em) / 3);
+}
+
+.btn--bcr {
+  left: calc(0.8em + (100% - 2.6em) * 2 / 3);
+}
+
+/* Інтерактивність і тактильний відгук для всіх кнопок гри */
+.btn {
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  outline: none;
+}
+
+.btn:hover {
+  color: rgba(0, 0, 0, 0.6);
+}
+
+.btn:active {
+  transform: scale(0.9) !important;
+}
+
+/* Індикатор підключення гаманця Tonkeeper */
+.btn--wallet.is-connected {
+  color: #0098ea !important;
+}
+
+.btn--wallet.is-connected::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 6px;
+  height: 6px;
+  background-color: #10b981;
+  border-radius: 50%;
+  box-shadow: 0 0 6px rgba(16, 185, 129, 0.9);
+  pointer-events: none;
+}
+
+/* Індикатор авторизованого користувача Telegram */
+.btn--profile.is-auth {
+  color: rgba(0, 0, 0, 0.25);
+}
+
+/* Ледь помітна пульсація кнопки гаманця, поки він не підключений */
+@keyframes wallet-pulse {
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  50% {
+    transform: scale(1.08);
+    opacity: 0.7;
+  }
+}
+
+@keyframes wallet-ring {
+  0% {
+    transform: translate(-50%, -50%) scale(0.7);
+    opacity: 0.35;
+  }
+  100% {
+    transform: translate(-50%, -50%) scale(1.7);
+    opacity: 0;
+  }
+}
+
+.btn--wallet:not(.is-connected) svg {
+  animation: wallet-pulse 2.4s ease-in-out infinite;
+  transform-origin: center;
+}
+
+.btn--wallet:not(.is-connected)::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 1.5em;
+  height: 1.5em;
+  border-radius: 50%;
+  border: 1px solid rgba(0, 152, 234, 0.6);
+  animation: wallet-ring 2.4s ease-out infinite;
+  pointer-events: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .btn--wallet:not(.is-connected) svg,
+  .btn--wallet:not(.is-connected)::before {
+    animation: none;
+  }
+}
+
+
+
+
+
+/* Святкування нового рекорду */
+@keyframes record-piece {
+  0% {
+    transform: translate(0, 0) rotate(0deg) scale(0.6);
+    opacity: 0;
+  }
+  10% {
+    opacity: 1;
+  }
+  100% {
+    transform: translate(var(--dx), calc(var(--dy) + 160px)) rotate(var(--rot)) scale(1);
+    opacity: 0;
+  }
+}
+
+.record-piece {
+  animation: record-piece 2.2s cubic-bezier(0.2, 0.7, 0.3, 1) forwards;
+}
+
+@keyframes record-label {
+  0% {
+    transform: scale(0.6) translateY(10px);
+    opacity: 0;
+  }
+  15% {
+    transform: scale(1.05) translateY(0);
+    opacity: 1;
+  }
+  80% {
+    transform: scale(1) translateY(0);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(0.95) translateY(-10px);
+    opacity: 0;
+  }
+}
+
+.record-label {
+  animation: record-label 2.6s ease forwards;
+}
+
+/* Плавна поява панелей */
+@keyframes sheet-enter {
+  from {
+    transform: translateY(24px) scale(0.97);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0) scale(1);
+    opacity: 1;
+  }
+}
+
+.sheet-enter {
+  animation: sheet-enter 0.28s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+/* Bottom-sheet поява знизу на мобільних */
+@media (max-width: 639px) {
+  @keyframes sheet-enter {
+    from {
+      transform: translateY(100%);
+      opacity: 0.4;
+    }
+    to {
+      transform: translateY(0);
+      opacity: 1;
+    }
+  }
+  .sheet-enter {
+    animation: sheet-enter 0.34s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+}
+
+/* Об'ємне сяйво модальної оболонки */
+.sheet-shell {
+  box-shadow: 0 -8px 40px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(56, 189, 248, 0.06),
+    0 24px 70px -24px rgba(14, 165, 233, 0.4);
+}
+
+/* Каскадна поява рядків рейтингу */
+@keyframes leader-row-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.leader-row-in {
+  animation: leader-row-in 0.35s ease both;
+}
+
+/* Мерехтливий скелетон завантаження */
+.skeleton-shimmer {
+  background: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0.04) 25%,
+    rgba(255, 255, 255, 0.13) 37%,
+    rgba(255, 255, 255, 0.04) 63%
+  );
+  background-size: 400% 100%;
+  animation: shimmer 1.4s ease infinite;
+}
+
+@keyframes shimmer {
+  0% {
+    background-position: 100% 0;
+  }
+  100% {
+    background-position: 0 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .leader-row-in,
+  .sheet-enter,
+  .skeleton-shimmer {
+    animation: none;
+  }
+}
+
+/* 7 повзунків у налаштуваннях */
+.ui__prefs .range:not(:last-child) {
+  margin-bottom: 1.1em !important;
+}
+
+/* Акцентний колір, синхронізований із кольором кубика */
+:root {
+  --cube-accent: #38bdf8;
+}
+
+/* Центральна нижня кнопка (профіль) — безпечна зона Telegram */
+.btn--bc {
+  bottom: max(0.8em, env(safe-area-inset-bottom, 0.8em)) !important;
+  left: 50% !important;
+  transform: translateX(-50%) !important;
+}
+.btn--bc:active {
+  transform: translateX(-50%) scale(0.9) !important;
+}
+
+/* Нативна кнопка «Щоденні завдання» — вигляд як у решти іконок */
+.btn-daily-native {
+  color: rgba(0, 0, 0, 0.25);
+  pointer-events: auto;
+}
+.btn-daily-native:hover {
+  color: rgba(0, 0, 0, 0.6);
+}
+
+/* Верхні React-кнопки залишаються читабельними у світлій і темній темах. */
+.fortune-wheel-label {
+  color: #92400e;
+  text-shadow: 0 1px 2px rgba(255, 255, 255, 0.9);
+}
+
+.duel-label {
+  color: #9f1239;
+  text-shadow: 0 1px 2px rgba(255, 255, 255, 0.9);
+}
+
+/* Рівномірний ряд із 4 нижніх іконок у меню: трофей · профіль · завдання · налаштування */
+.btn--stats,
+.btn--profile,
+.btn--prefs,
+.btn--daily {
+  bottom: max(0.96rem, env(safe-area-inset-bottom, 0.96rem)) !important;
+}
+.btn--stats,
+.btn--prefs,
+.btn--daily {
+  right: auto !important;
+}
+.btn--stats {
+  left: 12.5% !important;
+  transform: translateX(-50%) !important;
+}
+.btn--profile {
+  left: 37.5% !important;
+}
+.btn--daily {
+  left: 62.5% !important;
+  transform: translateX(-50%) !important;
+}
+.btn--prefs {
+  left: 87.5% !important;
+  transform: translateX(-50%) !important;
+}
+.btn--stats:active,
+.btn--daily:active,
+.btn--prefs:active {
+  transform: translateX(-50%) scale(0.9) !important;
+}
+
+/* ---------- Темна тема інтерфейсу гри ---------- */
+.theme-dark .ui__background {
+  background: #0b1220 !important;
+}
+.theme-dark .ui__background:after {
+  background-image: linear-gradient(to bottom, #0b1220 45%, rgba(11, 18, 32, 0) 100%) !important;
+}
+.theme-dark .ui {
+  color: #e2e8f0;
+}
+.theme-dark .btn {
+  color: rgba(255, 255, 255, 0.5);
+}
+.theme-dark .btn:hover {
+  color: rgba(255, 255, 255, 0.9);
+}
+.theme-dark .btn--profile.is-auth {
+  color: rgba(255, 255, 255, 0.5);
+}
+.theme-dark .btn-daily-native {
+  color: rgba(255, 255, 255, 0.5);
+}
+.theme-dark .btn-daily-native:hover {
+  color: rgba(255, 255, 255, 0.9);
+}
+.theme-dark .fortune-wheel-label {
+  color: #fde68a;
+  text-shadow: 0 1px 5px rgba(0, 0, 0, 0.9);
+}
+.theme-dark .duel-label {
+  color: #fecdd3;
+  text-shadow: 0 1px 5px rgba(0, 0, 0, 0.9);
+}
+.theme-dark .stats > i {
+  color: rgba(255, 255, 255, 0.45);
+}
+.theme-dark .range__list {
+  color: rgba(255, 255, 255, 0.5);
+}
+.theme-dark .range__track-line {
+  background: rgba(255, 255, 255, 0.2);
+}
+.theme-dark .text i {
+  color: #e2e8f0;
+}
+
+/* Повноекранні сторінки (Лідери / Кабінет / Завдання): поява знизу */
+@keyframes full-page-in {
+  from {
+    transform: translateY(100%);
+  }
+  to {
+    transform: translateY(0);
+  }
+}
+
+@keyframes fortune-pop {
+  0% {
+    transform: translateY(0) scale(0.9);
+    opacity: 0.2;
+  }
+  50% {
+    transform: translateY(-18px) scale(1.15);
+    opacity: 1;
+  }
+  100% {
+    transform: translateY(-32px) scale(0.8);
+    opacity: 0.1;
+  }
+}
+
+.full-page {
+  animation: full-page-in 0.32s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .full-page {
+    animation: none;
+  }
+}

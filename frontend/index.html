@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="uk">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width,height=device-height,user-scalable=no,initial-scale=1.0,maximum-scale=1.0,minimum-scale=1.0" />
+    <title>THE CUBE</title>
+    <meta name="description" content="3D гра-головоломка Кубик Рубіка для Telegram Mini App з авторизацією через Telegram та підключенням гаманця Tonkeeper (TON Connect)" />
+    <meta property="og:title" content="THE CUBE" />
+    <meta property="og:description" content="3D гра-головоломка Кубик Рубіка для Telegram Mini App з авторизацією через Telegram та підключенням гаманця Tonkeeper (TON Connect)" />
+    <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="THE CUBE" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="translucent-black" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/assets/icons/apple-touch-icon.png" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/assets/icons/favicon-32x32.png" />
+    <link rel="icon" type="image/png" sizes="16x16" href="/assets/icons/favicon-16x16.png" />
+    <link rel="manifest" href="/assets/icons/site.webmanifest" />
+    <link rel="shortcut icon" href="/assets/icons/favicon.ico" />
+    <meta name="theme-color" content="#ffffff" />
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@700;900&family=Russo+One&display=swap" rel="stylesheet">
+    <link rel="stylesheet" type="text/css" href="/assets/css/styles.css" />
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <script>
+      window.gameVersion = '0.99.2';
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <div class="ui">
+      <div class="ui__background"></div>
+      <div class="ui__game"></div>
+      <div class="ui__texts">
+        <h1 class="text text--title">
+          <span>THE</span>
+          <span>CUBE</span>
+        </h1>
+        <div class="text text--note">
+          Подвійний тап для початку
+        </div>
+        <div class="text text--timer">
+          0:00
+        </div>
+        <div class="text text--complete">
+          <span>Завершено!</span>
+        </div>
+        <div class="text text--best-time">
+          <icon trophy></icon>
+          <span>Найкращий час!</span>
+        </div>
+      </div>
+      <div class="ui__prefs">
+        <range name="size" title="Розмір кубика" list="2,3,4,5"></range>
+        <range name="flip" title="Тип повороту" list="Швидкий&nbsp;,Плавний,Пружний"></range>
+        <range name="scramble" title="Довжина перемішування" list="20,25,30"></range>
+        <range name="fov" title="Кут огляду" list="Ортографічний,Перспективний"></range>
+        <range name="theme" title="Колірна схема" list="Куб,Ерно,Пил,Дощ"></range>
+        <range name="haptic" title="Тактильна вібрація" list="Вимк,М'яка,Оптимальна,Чітка"></range>
+        <range name="sound" title="Звукові ефекти" list="Вимк,Увімк"></range>
+        <range name="music" title="Гучність музики" list="0,25,50,75,100"></range>
+      </div>
+      <div class="ui__theme">
+        <range name="hue" title="Відтінок" color></range>
+        <range name="saturation" title="Насиченість" color></range>
+        <range name="lightness" title="Яскравість" color></range>
+      </div>
+      <div class="ui__stats" style="display:none">
+        <div class="stats" name="cube-size">
+          <i>Кубик:</i><b>3x3x3</b>
+        </div>
+        <div class="stats" name="total-solves">
+          <i>Всього розв'язань:</i><b>-</b>
+        </div>
+        <div class="stats" name="best-time">
+          <i>Найкращий час:</i><b>-</b>
+        </div>
+        <div class="stats" name="worst-time">
+          <i>Найгірший час:</i><b>-</b>
+        </div>
+        <div class="stats" name="average-5">
+          <i>Середнє з 5:</i><b>-</b>
+        </div>
+        <div class="stats" name="average-12">
+          <i>Середнє з 12:</i><b>-</b>
+        </div>
+        <div class="stats" name="average-25">
+          <i>Середнє з 25:</i><b>-</b>
+        </div>
+      </div>
+      <div class="ui__buttons">
+        <button class="btn btn--bl btn--stats" title="Статистика" aria-label="Статистика">
+          <icon trophy></icon>
+        </button>
+        <button class="btn btn--bc btn--profile" title="Мій кабінет" aria-label="Мій кабінет" data-testid="profile-button">
+          <icon profile></icon>
+        </button>
+        <button class="btn btn--br btn--prefs" title="Налаштування" aria-label="Налаштування">
+          <icon settings></icon>
+        </button>
+        <button class="btn btn--bl btn--back" title="Назад" aria-label="Назад">
+          <icon back></icon>
+        </button>
+        <button class="btn btn--br btn--theme" title="Кольори теми" aria-label="Кольори теми">
+          <icon theme></icon>
+        </button>
+        <button class="btn btn--br btn--reset" title="Скинути тему" aria-label="Скинути тему">
+          <icon reset></icon>
+        </button>
+      </div>
+    </div>
+    <script src="/assets/js/three.js"></script>
+    <script src="/assets/js/cube.js"></script>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+

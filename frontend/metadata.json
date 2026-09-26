@@ -1,0 +1,6 @@
+{
+  "name": "THE CUBE",
+  "description": "3D гра-головоломка Кубик Рубіка для Telegram Mini App з авторизацією через Telegram та підключенням гаманця Tonkeeper (TON Connect)",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
