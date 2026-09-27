@@ -7,6 +7,7 @@ import { useEffect, useState } from 'react';
 import { api, DailyData, formatTime } from '../utils/api';
 import { GAME_STATE, startDailyChallenge } from '../utils/gameBridge';
 import { triggerLayerTurnVibration } from '../utils/haptics';
+import { shareToTelegram } from '../utils/telegramAuth';
 import { Sheet } from './Sheet';
 import { LeaderList } from './LeaderList';
 
@@ -52,19 +53,6 @@ export function DailyChallenge({ gameState, myUserId, inTelegram, refreshKey }: 
     }
   };
 
-  const sendTest = async () => {
-    if (reminderBusy) return;
-    setReminderBusy(true);
-    try {
-      await api.sendTestReminder();
-      flash('Повідомлення надіслано — перевірте чат з ботом');
-    } catch (e) {
-      flash((e as Error).message);
-    } finally {
-      setReminderBusy(false);
-    }
-  };
-
   const sendDigest = async () => {
     if (reminderBusy) return;
     setReminderBusy(true);
@@ -97,6 +85,15 @@ export function DailyChallenge({ gameState, myUserId, inTelegram, refreshKey }: 
     if (!data) return;
     triggerLayerTurnVibration(30, true);
     if (startDailyChallenge(data.date, data.moves)) setIsOpen(false);
+  };
+
+  const shareResult = () => {
+    if (!data?.me) return;
+    triggerLayerTurnVibration(20, true);
+    shareToTelegram(
+      `⚡ Мій результат у «Виклику дня»: ${formatTime(data.me.time_ms)}, місце #${data.me.rank}. Зможеш швидше?`,
+      window.location.origin,
+    );
   };
 
   const leader = data?.top[0];
@@ -160,6 +157,24 @@ export function DailyChallenge({ gameState, myUserId, inTelegram, refreshKey }: 
           {data?.me ? `Покращити результат (${formatTime(data.me.time_ms)})` : 'Грати виклик дня'}
         </button>
 
+        {data?.me && (
+          <button
+            onClick={shareResult}
+            data-testid="daily-share-result"
+            className="mt-2 w-full py-2.5 rounded-xl bg-sky-500/10 hover:bg-sky-500/20 border border-sky-400/25 text-sky-200 font-bold text-xs active:scale-[0.98] transition-all"
+          >
+            <span className="inline-flex items-center justify-center gap-2">
+              <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <circle cx="18" cy="5" r="3" />
+                <circle cx="6" cy="12" r="3" />
+                <circle cx="18" cy="19" r="3" />
+                <path d="m8.7 10.7 6.6-4.4M8.7 13.3l6.6 4.4" />
+              </svg>
+              Поділитися результатом
+            </span>
+          </button>
+        )}
+
         {inTelegram && data && (
           <div className="mt-3 p-3 rounded-xl bg-slate-950/70 border border-white/5" data-testid="reminder-box">
             <div className="flex items-center justify-between gap-3">
@@ -189,14 +204,6 @@ export function DailyChallenge({ gameState, myUserId, inTelegram, refreshKey }: 
                   className="text-[10px] px-2 py-1 rounded-md bg-white/5 hover:bg-white/10 text-slate-300 whitespace-nowrap transition-colors disabled:opacity-50"
                 >
                   Дайджест тижня
-                </button>
-                <button
-                  onClick={sendTest}
-                  disabled={reminderBusy}
-                  data-testid="reminder-test-button"
-                  className="text-[10px] px-2 py-1 rounded-md bg-white/5 hover:bg-white/10 text-slate-300 whitespace-nowrap transition-colors disabled:opacity-50"
-                >
-                  Надіслати тестове
                 </button>
               </div>
             </div>

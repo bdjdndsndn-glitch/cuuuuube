@@ -21,9 +21,19 @@ interface TelegramProfileModalProps {
   isRealTelegram: boolean;
 }
 
+interface CountryInfo {
+  name: string;
+  code: string;
+  flag: string;
+  expiresAt: number;
+}
+
 const SIZES = [2, 3, 4, 5];
 const TESTNET_CHAIN = '-3';
 const COIN_TO_TON = 0.0001;
+const MIN_WITHDRAWAL_NANO = 10_000_000_000;
+const COUNTRY_CACHE_KEY = 'thecube-profile-country';
+const COUNTRY_CACHE_TTL = 24 * 60 * 60 * 1000;
 
 const coinIcon = (
   <span className="relative inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-yellow-100 via-amber-400 to-orange-600 shadow-[inset_-1px_-2px_2px_rgba(120,53,15,0.45),inset_1px_1px_2px_rgba(255,255,255,0.8),0_2px_4px_rgba(120,53,15,0.35)] [transform:rotateX(12deg)]" aria-hidden="true">
@@ -56,7 +66,16 @@ export function TelegramProfileModal({ isOpen, onClose, user, isRealTelegram }: 
   const [theme, setTheme] = useState<UITheme>(getUITheme());
   const [accent, setAccent] = useState('#38bdf8');
   const [coins, setCoins] = useState(0);
+  const [tonBalanceNano, setTonBalanceNano] = useState(0);
   const [exchangeCoins, setExchangeCoins] = useState(0);
+  const [country, setCountry] = useState<CountryInfo | null>(null);
+  const [exchangeConfirm, setExchangeConfirm] = useState(false);
+  const [exchangeBusy, setExchangeBusy] = useState(false);
+  const [exchangeMessage, setExchangeMessage] = useState<string | null>(null);
+  const [withdrawConfirm, setWithdrawConfirm] = useState(false);
+  const [withdrawBusy, setWithdrawBusy] = useState(false);
+  const [withdrawMessage, setWithdrawMessage] = useState<string | null>(null);
+  const [withdrawalPending, setWithdrawalPending] = useState(false);
 
   const isTestnet = wallet?.account?.chain === TESTNET_CHAIN;
 
@@ -66,6 +85,51 @@ export function TelegramProfileModal({ isOpen, onClose, user, isRealTelegram }: 
       if (c) setAccent(c);
     }
   }, [isOpen]);
+
+  useEffect(() => {
+    if (!isOpen || !user) return;
+    let cancelled = false;
+    try {
+      const cached = sessionStorage.getItem(COUNTRY_CACHE_KEY);
+      if (cached) {
+        const value = JSON.parse(cached) as CountryInfo;
+        if (value.expiresAt > Date.now() && value.name && value.code && value.flag) {
+          setCountry(value);
+          return () => {
+            cancelled = true;
+          };
+        }
+      }
+    } catch {
+      try {
+        sessionStorage.removeItem(COUNTRY_CACHE_KEY);
+      } catch {
+        // Storage may be disabled by the browser.
+      }
+    }
+
+    setCountry(null);
+    const controller = new AbortController();
+    fetch('https://ipwho.is/', { signal: controller.signal })
+      .then((response) => (response.ok ? response.json() : Promise.reject(new Error('GeoIP unavailable'))))
+      .then((result: { success?: boolean; country?: string; country_code?: string; flag?: { emoji?: string } }) => {
+        const code = result.country_code?.toUpperCase();
+        if (cancelled || result.success === false || !result.country || !code || !/^[A-Z]{2}$/.test(code)) return;
+        const flag = result.flag?.emoji || String.fromCodePoint(...Array.from(code, (letter) => 127397 + letter.charCodeAt(0)));
+        const value: CountryInfo = { name: result.country, code, flag, expiresAt: Date.now() + COUNTRY_CACHE_TTL };
+        setCountry(value);
+        try {
+          sessionStorage.setItem(COUNTRY_CACHE_KEY, JSON.stringify(value));
+        } catch {
+          // Country display remains available even when browser storage is blocked.
+        }
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [isOpen, user?.id]);
 
   useEffect(() => {
     if (!isOpen || !rawAddress) return;
@@ -90,6 +154,15 @@ export function TelegramProfileModal({ isOpen, onClose, user, isRealTelegram }: 
         if (cancelled) return;
         setCoins(d.coins);
         setExchangeCoins(d.coins);
+        setTonBalanceNano(d.ton_balance_nano ?? 0);
+      })
+      .catch(() => {});
+    api.walletWithdrawals()
+      .then(({ withdrawals }) => {
+        if (cancelled) return;
+        const pending = withdrawals.some((request) => request.status === 'pending');
+        setWithdrawalPending(pending);
+        if (pending) setWithdrawMessage('Заявка очікує ручної обробки.');
       })
       .catch(() => {});
     return () => {
@@ -122,6 +195,44 @@ export function TelegramProfileModal({ isOpen, onClose, user, isRealTelegram }: 
     setTimeout(() => setCopied(false), 2000);
   };
 
+  const submitExchange = async () => {
+    if (!address || !wallet || exchangeCoins < 1 || exchangeCoins > coins || exchangeBusy) return;
+    setExchangeBusy(true);
+    setExchangeMessage(null);
+    try {
+      const exchange = await api.createWalletExchange(exchangeCoins, address);
+      setCoins(exchange.coins);
+      setExchangeCoins(0);
+      setTonBalanceNano(exchange.ton_balance_nano);
+      setExchangeConfirm(false);
+      setExchangeMessage(`${exchange.exchanged_coins.toLocaleString('uk-UA')} монет обміняно на ${formatTon(exchange.credited_nano)} TON.`);
+      triggerLayerTurnVibration(25, true);
+    } catch (error) {
+      setExchangeMessage(error instanceof Error ? error.message : 'Не вдалося обміняти монети');
+    } finally {
+      setExchangeBusy(false);
+    }
+  };
+
+  const submitWithdrawal = async () => {
+    if (!address || !wallet || tonBalanceNano < MIN_WITHDRAWAL_NANO || withdrawalPending || withdrawBusy) return;
+    const amountNano = tonBalanceNano;
+    setWithdrawBusy(true);
+    setWithdrawMessage(null);
+    try {
+      const withdrawal = await api.createWalletWithdrawal(amountNano, address);
+      setTonBalanceNano((current) => Math.max(0, current - withdrawal.amount_nano));
+      setWithdrawConfirm(false);
+      setWithdrawalPending(true);
+      setWithdrawMessage(`Заявку на ${withdrawal.amount_ton} TON створено. Очікує ручної виплати.`);
+      triggerLayerTurnVibration(25, true);
+    } catch (error) {
+      setWithdrawMessage(error instanceof Error ? error.message : 'Не вдалося створити заявку');
+    } finally {
+      setWithdrawBusy(false);
+    }
+  };
+
 
   const profileIcon = (
     <svg viewBox="0 0 24 24" className="w-5 h-5 fill-current">
@@ -140,7 +251,7 @@ export function TelegramProfileModal({ isOpen, onClose, user, isRealTelegram }: 
       testId="profile-modal"
     >
       {user ? (
-        <div className="space-y-0.5 pb-1 animate-in fade-in slide-in-from-bottom-2 duration-300" data-testid="profile-user-info">
+        <div className="space-y-0.5 pb-16 animate-in fade-in slide-in-from-bottom-2 duration-300" data-testid="profile-user-info">
           {/* Профіль гравця — компактна картка */}
           <div
             className="relative flex items-center gap-2 p-1.5 rounded-2xl border border-white/10 overflow-hidden shadow-lg transition-all duration-300 hover:border-white/20"
@@ -163,9 +274,21 @@ export function TelegramProfileModal({ isOpen, onClose, user, isRealTelegram }: 
               )}
             </div>
             <div className="relative min-w-0 flex-1">
-              <h4 className="text-base font-extrabold tracking-tight truncate leading-tight" data-testid="profile-user-name">{user.first_name} {user.last_name || ''}</h4>
+              <h4 className="flex min-w-0 items-center gap-1.5 text-base font-extrabold tracking-tight leading-tight" data-testid="profile-user-name">
+                <span className="truncate">{user.first_name} {user.last_name || ''}</span>
+                {user.username?.toLowerCase() === 'mouurice' && (
+                  <svg viewBox="0 0 20 20" className="h-4 w-4 shrink-0" role="img" aria-label="Власник THE CUBE">
+                    <title>Власник THE CUBE</title>
+                    <circle cx="10" cy="10" r="9" fill="#38bdf8" />
+                    <path d="m5.5 10.2 3 3 6-6.2" fill="none" stroke="#082f49" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
+                )}
+              </h4>
               {user.username ? (
-                <p className="text-[11px] text-sky-300 font-mono truncate">@{user.username}</p>
+                <div className="flex min-w-0 items-center gap-1">
+                  <p className={`min-w-0 truncate text-[11px] text-sky-300 font-mono ${country ? 'max-w-[calc(100%-1.25rem)]' : 'max-w-full'}`}>@{user.username}</p>
+                  {country && <span className="shrink-0 text-[13px] leading-none" title={`Країна за IP: ${country.name}`} aria-label={`Країна за IP: ${country.name}`}>{country.flag}</span>}
+                </div>
               ) : (
                 <p className="text-[11px] text-slate-400 truncate">Гравець THE CUBE</p>
               )}
@@ -195,9 +318,16 @@ export function TelegramProfileModal({ isOpen, onClose, user, isRealTelegram }: 
           </div>
 
           {/* Швидкий перемикач теми поруч із базовою інформацією профілю */}
-          <button onClick={toggleTheme} className="w-full flex items-center justify-between gap-3 p-1.5 rounded-xl bg-slate-950/70 border border-white/10 hover:border-sky-400/30 hover:bg-slate-900/80 transition-all duration-300" data-testid="theme-toggle" aria-label="Змінити тему інтерфейсу">
+          <button
+            onClick={toggleTheme}
+            role="switch"
+            aria-checked={theme === 'dark'}
+            aria-label="Тема інтерфейсу"
+            className={`w-full flex items-center justify-between gap-3 px-2.5 py-2 rounded-2xl border transition-all duration-300 ${theme === 'dark' ? 'bg-slate-950/70 border-sky-400/25 hover:border-sky-300/45' : 'bg-slate-900/80 border-amber-300/25 hover:border-amber-200/45'}`}
+            data-testid="theme-toggle"
+          >
             <div className="flex items-center gap-2.5 min-w-0 text-left">
-              <span className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0 border border-white/10" style={{ background: `${accent}18`, color: accent }}>
+              <span className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0 border border-white/10 shadow-inner" style={{ background: `${accent}20`, color: accent }}>
                 {theme === 'dark' ? (
                   <svg viewBox="0 0 24 24" className="w-4 h-4 fill-current"><path d="M12 3a9 9 0 1 0 9 9c0-.46-.04-.92-.1-1.36a5.39 5.39 0 0 1-7.54-7.54c-.44-.06-.9-.1-1.36-.1z" /></svg>
                 ) : (
@@ -205,11 +335,11 @@ export function TelegramProfileModal({ isOpen, onClose, user, isRealTelegram }: 
                 )}
               </span>
               <span className="min-w-0">
-                <span className="block text-[10px] uppercase tracking-wider text-slate-400 font-bold">Оформлення</span>
+                <span className="block text-[9px] uppercase tracking-wider text-slate-400 font-bold">Оформлення</span>
                 <span className="block text-[11px] font-semibold text-white truncate">{theme === 'dark' ? 'Темна тема' : 'Світла тема'}</span>
               </span>
             </div>
-            <span className={`relative w-12 h-6 rounded-full transition-colors shrink-0 ${theme === 'dark' ? 'bg-slate-500/70' : 'bg-white/85'}`}>
+            <span className={`relative w-12 h-6 rounded-full border border-white/10 transition-colors shrink-0 ${theme === 'dark' ? 'bg-sky-500/70' : 'bg-slate-600'}`}>
               <span className={`absolute top-0.5 w-5 h-5 rounded-full bg-white shadow-md transition-all duration-300 ${theme === 'dark' ? 'left-[26px]' : 'left-0.5'}`} />
             </span>
           </button>
@@ -239,24 +369,24 @@ export function TelegramProfileModal({ isOpen, onClose, user, isRealTelegram }: 
 
           {/* Ігрові монети + обмін на TON */}
           {isRealTelegram && (
-            <div className="relative top-4 overflow-hidden rounded-2xl bg-gradient-to-br from-amber-400/12 via-slate-950/70 to-orange-500/10 border border-amber-300/35 px-2.5 py-1.5 shadow-[0_0_18px_rgba(251,191,36,0.12)] transition-all duration-300 hover:-translate-y-0.5 hover:border-amber-200/60 hover:shadow-[0_0_24px_rgba(251,191,36,0.2)]" data-testid="cabinet-coins">
+            <div className="relative top-4 overflow-hidden rounded-2xl bg-gradient-to-br from-amber-400/12 via-slate-950/70 to-orange-500/10 border border-amber-300/35 px-2 py-1 shadow-[0_0_18px_rgba(251,191,36,0.12)] transition-all duration-300 hover:-translate-y-0.5 hover:border-amber-200/60 hover:shadow-[0_0_24px_rgba(251,191,36,0.2)]" data-testid="cabinet-coins">
               <div className="pointer-events-none absolute inset-0 bg-gradient-to-r from-transparent via-white/5 to-transparent opacity-60" />
               <div className="flex items-center justify-between gap-3">
                 <div className="flex items-center gap-2 min-w-0">
-                  <span className="relative w-6 h-6 rounded-lg bg-amber-300/20 border border-amber-200/40 flex items-center justify-center shrink-0 shadow-[0_0_12px_rgba(251,191,36,0.25)] animate-pulse [&>svg]:w-3 [&>svg]:h-3">{coinIcon}</span>
+                  <span className="relative w-5 h-5 rounded-lg bg-amber-300/20 border border-amber-200/40 flex items-center justify-center shrink-0 shadow-[0_0_12px_rgba(251,191,36,0.25)] animate-pulse [&>svg]:w-3 [&>svg]:h-3">{coinIcon}</span>
                   <div className="min-w-0">
                     <div className="text-[9px] uppercase tracking-[0.12em] text-amber-100/75 font-extrabold leading-none">Баланс монет</div>
                     <div className="mt-0.5 text-base font-black text-amber-200 leading-none tabular-nums tracking-wide truncate drop-shadow-[0_0_8px_rgba(251,191,36,0.35)]" data-testid="cabinet-coins-balance">{coins}</div>
                   </div>
                 </div>
                 <div className="shrink-0 rounded-lg bg-sky-300/10 border border-sky-200/25 px-2 py-1 text-right shadow-[0_0_10px_rgba(56,189,248,0.1)]">
-                  <div className="text-[8px] uppercase tracking-[0.12em] text-sky-100/75 font-extrabold leading-none">≈ TON</div>
-                  <div className="mt-0.5 text-xs font-black text-sky-200 font-mono tabular-nums" data-testid="cabinet-coins-ton">{coinsToTon(coins)}</div>
+                  <div className="text-[8px] uppercase tracking-[0.12em] text-sky-100/75 font-extrabold leading-none">Баланс TON</div>
+                  <div className="mt-0.5 text-xs font-black text-sky-200 font-mono tabular-nums" data-testid="cabinet-coins-ton">{formatTon(tonBalanceNano)}</div>
                 </div>
               </div>
 
-              <div className="mt-1 pt-1 border-t border-white/8" data-testid="coin-exchange">
-                <div className="flex items-center justify-between gap-2 mb-1">
+              <div className="mt-0.5 pt-0.5 border-t border-white/8" data-testid="coin-exchange">
+                <div className="flex items-center justify-between gap-2 mb-0.5">
                   <span className="text-[10px] font-extrabold uppercase tracking-wider text-amber-100">Обмін на TON</span>
                   <span className="text-[9px] text-slate-400 whitespace-nowrap shrink-0">1 монета = {COIN_TO_TON} TON</span>
                 </div>
@@ -269,7 +399,7 @@ export function TelegramProfileModal({ isOpen, onClose, user, isRealTelegram }: 
                     value={exchangeCoins}
                     onChange={(e) => setExchangeCoins(Math.max(0, Math.min(coins, Math.floor(Number(e.target.value) || 0))))}
                     data-testid="exchange-input"
-                    className="min-w-0 flex-1 w-full bg-black/30 border border-white/10 rounded-lg px-2.5 py-1 text-sm font-mono font-bold text-amber-200 outline-none focus:border-amber-400/50 transition-colors"
+                    className="min-w-0 flex-1 w-full bg-black/30 border border-white/10 rounded-lg px-2.5 py-0.5 text-sm font-mono font-bold text-amber-200 outline-none focus:border-amber-400/50 transition-colors"
                   />
                   <button
                     onClick={() => setExchangeCoins(coins)}
@@ -295,15 +425,54 @@ export function TelegramProfileModal({ isOpen, onClose, user, isRealTelegram }: 
                   disabled={coins === 0}
                   aria-label="Кількість монет для обміну"
                   data-testid="exchange-slider"
-                  className="w-full mt-0.5 accent-amber-400 disabled:opacity-40"
+                  className="w-full accent-amber-400 disabled:opacity-40"
                   style={{ touchAction: 'none', WebkitTapHighlightColor: 'transparent' }}
                 />
+                <button
+                  type="button"
+                  onClick={() => {
+                    setExchangeMessage(null);
+                    setExchangeConfirm(true);
+                  }}
+                  disabled={!wallet || exchangeCoins < 1 || exchangeBusy}
+                  data-testid="exchange-submit"
+                  className="mt-1 w-full rounded-lg border border-amber-300/30 bg-amber-400/15 py-1 text-[10px] font-bold text-amber-100 transition-colors hover:bg-amber-400/25 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  {exchangeBusy ? 'Обмінюємо…' : 'Обміняти'}
+                </button>
+                {!wallet && <p className="mt-0.5 text-center text-[9px] text-slate-400">Підключіть збережений гаманець</p>}
+                {exchangeConfirm && (
+                  <div className="mt-1 rounded-lg border border-amber-300/20 bg-slate-950/60 p-2" data-testid="exchange-confirm">
+                    <p className="text-[10px] leading-relaxed text-slate-300">
+                      Обміняти {exchangeCoins.toLocaleString('uk-UA')} монет на {coinsToTon(exchangeCoins)} TON і зарахувати на внутрішній TON-баланс? Виведення доступне окремо від 10 TON.
+                    </p>
+                    <div className="mt-1.5 flex gap-1.5">
+                      <button
+                        type="button"
+                        onClick={submitExchange}
+                        disabled={exchangeBusy}
+                        className="flex-1 rounded-md border border-amber-200/25 bg-amber-400/20 px-2 py-1 text-[10px] font-bold text-amber-100 disabled:opacity-50"
+                      >
+                        Підтвердити
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setExchangeConfirm(false)}
+                        disabled={exchangeBusy}
+                        className="rounded-md border border-white/10 bg-white/5 px-2 py-1 text-[10px] font-semibold text-slate-300 disabled:opacity-50"
+                      >
+                        Скасувати
+                      </button>
+                    </div>
+                  </div>
+                )}
+                {exchangeMessage && <p className="mt-1 text-center text-[9px] leading-relaxed text-amber-100" role="status">{exchangeMessage}</p>}
               </div>
             </div>
           )}
 
           {/* Гаманець TON — для майбутніх оплат і покупок */}
-          <div className="relative top-8 rounded-2xl bg-gradient-to-br from-sky-600/15 to-blue-900/20 border border-sky-500/20 p-1 transition-all duration-300 hover:border-sky-400/35" data-testid="cabinet-wallet">
+          <div className="relative top-6 rounded-2xl bg-gradient-to-br from-sky-600/15 to-blue-900/20 border border-sky-500/20 p-1 transition-all duration-300 hover:border-sky-400/35" data-testid="cabinet-wallet">
             <div className="flex items-center justify-between mb-0.5 gap-2">
               <div className="flex items-center gap-1.5 min-w-0">
                 <svg viewBox="0 0 24 24" className="w-4 h-4 fill-sky-400 shrink-0"><path d="M12 2L3 8.5V15.5L12 22L21 15.5V8.5L12 2ZM12 4.3L18.5 9L12 13.7L5.5 9L12 4.3Z" /></svg>
@@ -322,6 +491,49 @@ export function TelegramProfileModal({ isOpen, onClose, user, isRealTelegram }: 
                     {balance !== null ? <>{formatTon(balance)} <span className="text-[11px] text-sky-300">TON</span></> : <span className="text-[11px] text-slate-400 animate-pulse">…</span>}
                   </span>
                 </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setWithdrawMessage(null);
+                    setWithdrawConfirm(true);
+                  }}
+                  disabled={tonBalanceNano < MIN_WITHDRAWAL_NANO || withdrawalPending || withdrawBusy}
+                  title={tonBalanceNano < MIN_WITHDRAWAL_NANO ? 'Мінімальний баланс для виведення — 10 TON' : undefined}
+                  data-testid="wallet-withdraw-button"
+                  className="mt-1 w-full py-1 rounded-lg bg-sky-500/15 hover:bg-sky-500/25 text-sky-200 border border-sky-400/30 text-[10px] font-semibold transition-colors active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-45"
+                >
+                  {withdrawBusy ? 'Створюємо заявку…' : 'Вивести TON'}
+                </button>
+                {tonBalanceNano < MIN_WITHDRAWAL_NANO && (
+                  <p className="mt-0.5 text-center text-[9px] text-slate-400">Для виведення потрібно щонайменше 10 TON</p>
+                )}
+                {withdrawalPending && <p className="mt-0.5 text-center text-[9px] text-amber-200">Попередня заявка ще обробляється</p>}
+                {withdrawConfirm && (
+                  <div className="mt-1 rounded-lg border border-sky-300/20 bg-slate-950/60 p-2" data-testid="withdraw-confirm">
+                    <p className="text-[10px] leading-relaxed text-slate-300">
+                      Подати заявку на весь баланс {formatTon(tonBalanceNano)} TON на {shortAddress(address)}? TON резервується до ручної обробки.
+                    </p>
+                    <div className="mt-1.5 flex gap-1.5">
+                      <button
+                        type="button"
+                        onClick={submitWithdrawal}
+                        disabled={withdrawBusy}
+                        className="flex-1 rounded-md bg-sky-500/20 px-2 py-1 text-[10px] font-bold text-sky-100 border border-sky-300/25 disabled:opacity-50"
+                      >
+                        Підтвердити
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setWithdrawConfirm(false)}
+                        disabled={withdrawBusy}
+                        className="rounded-md bg-white/5 px-2 py-1 text-[10px] font-semibold text-slate-300 border border-white/10 disabled:opacity-50"
+                      >
+                        Скасувати
+                      </button>
+                    </div>
+                  </div>
+                )}
+                {withdrawMessage && <p className="mt-1 text-center text-[9px] leading-relaxed text-sky-200" role="status">{withdrawMessage}</p>}
                 <button onClick={() => { triggerLayerTurnVibration(25, true); tonConnectUI.disconnect(); }} className="mt-1 w-full py-1 rounded-lg bg-rose-500/15 hover:bg-rose-500/25 text-rose-300 border border-rose-500/25 text-[10px] font-semibold transition-colors active:scale-95" data-testid="wallet-disconnect-button">
                   Від'єднати гаманець
                 </button>
@@ -356,10 +568,15 @@ export function TelegramProfileModal({ isOpen, onClose, user, isRealTelegram }: 
             </div>
           )}
 
-          <div className="mt-auto pt-4 pb-1 flex flex-nowrap justify-center gap-1 whitespace-nowrap text-[9px] text-slate-400">
-            <span className="px-1.5 py-0.5 rounded-md bg-slate-950/60 border border-white/5">ID: <span className="font-mono text-slate-300">{user.id}</span></span>
-            <span className="px-1.5 py-0.5 rounded-md bg-slate-950/60 border border-white/5">{isRealTelegram ? 'Telegram WebApp' : 'Браузер'}</span>
-            {user.language_code && <span className="px-1.5 py-0.5 rounded-md bg-slate-950/60 border border-white/5 uppercase">{user.language_code}</span>}
+          <div
+            className="fixed inset-x-0 z-20 px-4 pointer-events-none"
+            style={{ bottom: 'max(4px, env(safe-area-inset-bottom, 4px))' }}
+          >
+            <div className="mx-auto flex max-w-md flex-wrap justify-center gap-x-2 text-[9px] text-slate-500">
+              <span>ID: <span className="font-mono text-slate-300">{user.id}</span></span>
+              <span>{isRealTelegram ? 'Telegram WebApp' : 'Браузер'}</span>
+              {user.language_code && <span className="uppercase">{user.language_code}</span>}
+            </div>
           </div>
         </div>
       ) : (

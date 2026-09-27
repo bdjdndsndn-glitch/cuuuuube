@@ -19,6 +19,8 @@ interface FullPageProps {
   glow?: string;
   /** Classes for the right-hand icon badge */
   badgeClass?: string;
+  /** Keep compact views, such as the fortune wheel, inside one viewport. */
+  noScroll?: boolean;
   /** Sticky content pinned under the header (e.g. filter tabs) */
   sticky?: ReactNode;
   testId: string;
@@ -40,6 +42,7 @@ export function FullPage({
   icon,
   glow = 'rgba(56,189,248,0.16)',
   badgeClass = DEFAULT_BADGE,
+  noScroll = false,
   sticky,
   testId,
   children,
@@ -122,7 +125,7 @@ export function FullPage({
 
       <div
         ref={scrollRef}
-        className="flex-1 overflow-y-auto overscroll-contain px-4 pt-4"
+        className={`flex-1 px-4 pt-4 ${noScroll ? 'overflow-hidden' : 'overflow-y-auto overscroll-contain'}`}
         style={{ paddingBottom: 'max(24px, env(safe-area-inset-bottom, 24px))' }}
       >
         <div className="max-w-md mx-auto">{children}</div>

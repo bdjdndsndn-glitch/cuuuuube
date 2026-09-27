@@ -8,7 +8,7 @@ import createAdHandler from 'monetag-tg-sdk';
 import { api } from '../utils/api';
 import { triggerLayerTurnVibration } from '../utils/haptics';
 
-const MONETAG_ZONE_ID = (import.meta.env.VITE_MONETAG_ZONE_ID || '').trim();
+const MONETAG_ZONE_ID = (import.meta.env.VITE_MONETAG_ZONE_ID || '').trim().replace(/^show_/, '');
 const monetagAdHandler = MONETAG_ZONE_ID ? createAdHandler(MONETAG_ZONE_ID) : null;
 
 interface AdRewardCardProps {
@@ -24,6 +24,17 @@ const coinIcon = (
   <svg viewBox="0 0 24 24" className="w-3.5 h-3.5 fill-amber-300"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm0 2a8 8 0 1 1 0 16 8 8 0 0 1 0-16zm.9 3h-1.8v1.1c-1.1.2-2 1-2 2.2 0 1.4 1.1 2 2.4 2.3 1 .3 1.3.5 1.3.9s-.4.6-1 .6c-.8 0-1.5-.3-2-.6l-.5 1.6c.5.3 1.1.5 1.8.6V17h1.8v-1.1c1.2-.2 2.1-1 2.1-2.3 0-1.3-.9-1.9-2.4-2.3-1-.3-1.3-.5-1.3-.8s.3-.5.9-.5c.7 0 1.4.2 1.8.4l.5-1.6c-.5-.2-1-.3-1.6-.4V7z" /></svg>
 );
 
+export function isRewardedAdAvailable(): boolean {
+  return Boolean(MONETAG_ZONE_ID && monetagAdHandler);
+}
+
+export async function showRewardedAd(): Promise<void> {
+  if (!isRewardedAdAvailable() || !monetagAdHandler) {
+    throw new Error('Rewarded Interstitial зараз недоступний');
+  }
+  await monetagAdHandler();
+}
+
 export function AdRewardCard({ inTelegram, flash, onCredited }: AdRewardCardProps) {
   const [busy, setBusy] = useState(false);
 
@@ -35,7 +46,7 @@ export function AdRewardCard({ inTelegram, flash, onCredited }: AdRewardCardProp
 
     setBusy(true);
     try {
-      await monetagAdHandler();
+      await showRewardedAd();
       triggerLayerTurnVibration(30, true);
       const rewardResult = await api.rewardSpin();
       if (!rewardResult.ok) {
@@ -45,14 +56,15 @@ export function AdRewardCard({ inTelegram, flash, onCredited }: AdRewardCardProp
       const coinsAwarded = rewardResult.coins_awarded ?? rewardResult.coins ?? 100;
       flash(`+${coinsAwarded} монет`);
       onCredited();
-    } catch {
-      flash('Реклама зараз недоступна або не підтвердилась');
+    } catch (caught) {
+      const message = caught instanceof Error ? caught.message : 'Реклама зараз недоступна або не підтвердилась';
+      flash(message);
     } finally {
       setBusy(false);
     }
   };
 
-  const disabled = busy || !MONETAG_ZONE_ID || !monetagAdHandler;
+  const disabled = busy || !isRewardedAdAvailable();
 
   return (
     <div

@@ -22,6 +22,28 @@ export function AchievementsGrid() {
       .catch((e: Error) => setError(e.message || 'Не вдалося завантажити досягнення'));
   }, []);
 
+  const handleTouchStart = (event: React.TouchEvent<HTMLDivElement>) => {
+    const el = scrollRef.current;
+    if (!el) return;
+    touchStartX.current = event.touches[0].clientX;
+    touchStartScrollLeft.current = el.scrollLeft;
+  };
+
+  const handleTouchMove = (event: React.TouchEvent<HTMLDivElement>) => {
+    const el = scrollRef.current;
+    const startX = touchStartX.current;
+    const startScrollLeft = touchStartScrollLeft.current;
+    if (!el || startX === null || startScrollLeft === null) return;
+
+    const deltaX = event.touches[0].clientX - startX;
+    el.scrollLeft = startScrollLeft - deltaX;
+  };
+
+  const handleTouchEnd = () => {
+    touchStartX.current = null;
+    touchStartScrollLeft.current = null;
+  };
+
   if (error) return <p className="mt-4 text-[11px] text-rose-300 text-center">{error}</p>;
   if (!items)
     return (
@@ -46,28 +68,6 @@ export function AchievementsGrid() {
   const pages = Array.from({ length: Math.ceil(items.length / pageSize) }, (_, pageIndex) =>
     items.slice(pageIndex * pageSize, pageIndex * pageSize + pageSize)
   );
-
-  const handleTouchStart = (event: React.TouchEvent<HTMLDivElement>) => {
-    const el = scrollRef.current;
-    if (!el) return;
-    touchStartX.current = event.touches[0].clientX;
-    touchStartScrollLeft.current = el.scrollLeft;
-  };
-
-  const handleTouchMove = (event: React.TouchEvent<HTMLDivElement>) => {
-    const el = scrollRef.current;
-    const startX = touchStartX.current;
-    const startScrollLeft = touchStartScrollLeft.current;
-    if (!el || startX === null || startScrollLeft === null) return;
-
-    const deltaX = event.touches[0].clientX - startX;
-    el.scrollLeft = startScrollLeft - deltaX;
-  };
-
-  const handleTouchEnd = () => {
-    touchStartX.current = null;
-    touchStartScrollLeft.current = null;
-  };
 
   return (
     <div className="mt-1 w-full text-left" data-testid="achievements-grid">
@@ -101,10 +101,10 @@ export function AchievementsGrid() {
                   <div
                     key={a.id}
                     title={`${a.title} — ${a.desc}${a.unlocked_at ? ` (${a.unlocked_at.slice(0, 10)})` : ''}`}
-                    className={`flex flex-col items-center gap-1 p-1 rounded-xl border ${on ? 'bg-sky-500/10 border-sky-400/30' : 'bg-slate-950/50 border-white/5 opacity-70'}`}
+                    className={`flex flex-col items-center gap-1.5 p-1 rounded-xl border ${on ? 'bg-sky-500/10 border-sky-400/30' : 'bg-slate-950/50 border-white/5 opacity-70'}`}
                     data-testid={`achievement-${a.id}${on ? '-unlocked' : ''}`}
                   >
-                    <AchievementIcon id={a.id} unlocked={on} className="mt-2.5 w-10 h-10" />
+                    <AchievementIcon id={a.id} unlocked={on} className="mt-1 w-9 h-9 shrink-0" />
                     <span className={`text-[9px] leading-tight text-center font-semibold ${on ? 'text-white' : 'text-slate-500'}`}>{a.title}</span>
                   </div>
                 );

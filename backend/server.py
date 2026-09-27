@@ -10,6 +10,7 @@ import hmac
 import hashlib
 import json
 import random
+import secrets
 import logging
 from pathlib import Path
 from pydantic import BaseModel, Field
@@ -822,6 +823,7 @@ class MissionOut(BaseModel):
 
 class MissionsOut(BaseModel):
     coins: int
+    ton_balance_nano: int = 0
     items: List[MissionOut]
 
 
@@ -830,17 +832,59 @@ class ClaimIn(BaseModel):
     comment_text: Optional[str] = None
 
 
-def missions_payload(coins: int, done: set) -> MissionsOut:
+TON_NANO_PER_COIN = 100_000
+MIN_WITHDRAWAL_NANO = 10_000_000_000
+MAX_EXCHANGE_COINS = (2**63 - 1) // TON_NANO_PER_COIN
+TON_ADDRESS_PATTERN = r'^(?:EQ|UQ|kQ|0Q)[A-Za-z0-9_-]{46}$'
+
+
+class WalletExchangeIn(BaseModel):
+    coins: int = Field(ge=1, le=MAX_EXCHANGE_COINS)
+    wallet_address: str = Field(min_length=48, max_length=48, pattern=TON_ADDRESS_PATTERN)
+
+
+class WalletExchangeOut(BaseModel):
+    exchanged_coins: int
+    credited_nano: int
+    ton_balance_nano: int
+    coins: int
+
+
+class WalletWithdrawalIn(BaseModel):
+    amount_nano: int = Field(ge=MIN_WITHDRAWAL_NANO, le=2**63 - 1)
+    wallet_address: str = Field(min_length=48, max_length=48, pattern=TON_ADDRESS_PATTERN)
+
+
+class WalletWithdrawalOut(BaseModel):
+    request_id: str
+    coins: int
+    amount_nano: int
+    amount_ton: str
+    wallet_address: str
+    status: str
+    requested_at: str
+
+
+class WalletWithdrawalsOut(BaseModel):
+    withdrawals: List[WalletWithdrawalOut]
+
+
+def format_ton_nano(amount_nano: int) -> str:
+    whole, fractional = divmod(amount_nano, 1_000_000_000)
+    return f'{whole}.{fractional:09d}'.rstrip('0').rstrip('.')
+
+
+def missions_payload(coins: int, done: set, ton_balance_nano: int = 0) -> MissionsOut:
     items = [MissionOut(id=m['id'], type=m['type'], title=m['title'], desc=m['desc'],
                         reward=m['reward'], link=m.get('link'), completed=m['id'] in done)
              for m in MISSIONS]
-    return MissionsOut(coins=coins, items=items)
+    return MissionsOut(coins=coins, ton_balance_nano=ton_balance_nano, items=items)
 
 
 @api_router.get('/missions', response_model=MissionsOut)
 async def get_missions(user: TgUser = Depends(current_user)):
-    p = await db.players.find_one({'user_id': user.id}, {'_id': 0, 'coins': 1, 'completed_missions': 1}) or {}
-    return missions_payload(int(p.get('coins', 0)), set(p.get('completed_missions', [])))
+    p = await db.players.find_one({'user_id': user.id}, {'_id': 0, 'coins': 1, 'ton_balance_nano': 1, 'completed_missions': 1}) or {}
+    return missions_payload(int(p.get('coins', 0)), set(p.get('completed_missions', [])), int(p.get('ton_balance_nano', 0)))
 
 
 @api_router.post('/missions/{mission_id}/claim', response_model=MissionsOut)
@@ -887,8 +931,97 @@ async def claim_mission(mission_id: str, body: ClaimIn, user: TgUser = Depends(c
     )
     if result.modified_count == 0:
         raise HTTPException(status_code=409, detail='Місію вже виконано')
-    p2 = await db.players.find_one({'user_id': user.id}, {'_id': 0, 'coins': 1, 'completed_missions': 1}) or {}
-    return missions_payload(int(p2.get('coins', 0)), set(p2.get('completed_missions', [])))
+    p2 = await db.players.find_one({'user_id': user.id}, {'_id': 0, 'coins': 1, 'ton_balance_nano': 1, 'completed_missions': 1}) or {}
+    return missions_payload(int(p2.get('coins', 0)), set(p2.get('completed_missions', [])), int(p2.get('ton_balance_nano', 0)))
+
+
+@api_router.post('/wallet/exchange', response_model=WalletExchangeOut)
+async def exchange_wallet_coins(body: WalletExchangeIn, user: TgUser = Depends(current_user)):
+    player = await db.players.find_one(
+        {'user_id': user.id},
+        {'_id': 0, 'coins': 1, 'ton_balance_nano': 1, 'wallet_address': 1},
+    ) or {}
+    if player.get('wallet_address') != body.wallet_address:
+        raise HTTPException(status_code=409, detail='Адреса не збігається зі збереженим гаманцем')
+
+    credited_nano = body.coins * TON_NANO_PER_COIN
+    exchange = {
+        'exchange_id': secrets.token_hex(12),
+        'coins': body.coins,
+        'credited_nano': credited_nano,
+        'wallet_address': body.wallet_address,
+        'created_at': datetime.now(timezone.utc).isoformat(),
+    }
+    result = await db.players.update_one(
+        {'user_id': user.id, 'wallet_address': body.wallet_address, 'coins': {'$gte': body.coins}},
+        {
+            '$inc': {'coins': -body.coins, 'ton_balance_nano': credited_nano},
+            '$push': {'coin_exchanges': {'$each': [exchange], '$slice': -500}},
+        },
+    )
+    if result.modified_count == 0:
+        raise HTTPException(status_code=409, detail='Адреса або баланс змінилися. Оновіть кабінет і спробуйте ще раз')
+
+    updated_player = await db.players.find_one(
+        {'user_id': user.id},
+        {'_id': 0, 'coins': 1, 'ton_balance_nano': 1},
+    ) or {}
+    return WalletExchangeOut(
+        exchanged_coins=body.coins,
+        credited_nano=credited_nano,
+        ton_balance_nano=int(updated_player.get('ton_balance_nano', 0)),
+        coins=int(updated_player.get('coins', 0)),
+    )
+
+
+@api_router.post('/wallet/withdrawals', response_model=WalletWithdrawalOut, status_code=201)
+async def create_wallet_withdrawal(body: WalletWithdrawalIn, user: TgUser = Depends(current_user)):
+    player = await db.players.find_one(
+        {'user_id': user.id},
+        {'_id': 0, 'ton_balance_nano': 1, 'wallet_address': 1, 'withdrawal_requests': 1},
+    ) or {}
+    if player.get('wallet_address') != body.wallet_address:
+        raise HTTPException(status_code=409, detail='Адреса не збігається з підключеним і збереженим гаманцем')
+    if any(request.get('status') == 'pending' for request in player.get('withdrawal_requests', [])):
+        raise HTTPException(status_code=409, detail='У вас уже є заявка на виведення, що очікує обробки')
+    if int(player.get('ton_balance_nano', 0)) < body.amount_nano:
+        raise HTTPException(status_code=409, detail='Недостатньо TON-балансу для виведення')
+
+    amount_ton = format_ton_nano(body.amount_nano)
+    withdrawal = {
+        'request_id': secrets.token_hex(12),
+        'coins': body.amount_nano // TON_NANO_PER_COIN,
+        'amount_nano': body.amount_nano,
+        'amount_ton': amount_ton,
+        'wallet_address': body.wallet_address,
+        'status': 'pending',
+        'requested_at': datetime.now(timezone.utc).isoformat(),
+    }
+    result = await db.players.update_one(
+        {
+            'user_id': user.id,
+            'wallet_address': body.wallet_address,
+            'ton_balance_nano': {'$gte': body.amount_nano},
+            'withdrawal_requests': {'$not': {'$elemMatch': {'status': 'pending'}}},
+        },
+        {
+            '$inc': {'ton_balance_nano': -body.amount_nano},
+            '$push': {'withdrawal_requests': withdrawal},
+        },
+    )
+    if result.modified_count == 0:
+        raise HTTPException(status_code=409, detail='TON-баланс або стан заявки змінився. Оновіть кабінет і спробуйте ще раз')
+    return WalletWithdrawalOut(**withdrawal)
+
+
+@api_router.get('/wallet/withdrawals', response_model=WalletWithdrawalsOut)
+async def my_wallet_withdrawals(user: TgUser = Depends(current_user)):
+    player = await db.players.find_one(
+        {'user_id': user.id},
+        {'_id': 0, 'withdrawal_requests': 1},
+    ) or {}
+    requests = player.get('withdrawal_requests', [])
+    return WalletWithdrawalsOut(withdrawals=[WalletWithdrawalOut(**request) for request in reversed(requests[-50:])])
 
 
 # ---------- Friend Duels ----------
@@ -1136,8 +1269,12 @@ FORTUNE_WHEEL_PRIZES = [
     {'label': '50 монет', 'weight': 22, 'coins': 50, 'ton': None},
     {'label': '100 монет', 'weight': 15, 'coins': 100, 'ton': None},
     {'label': '0.0015 TON', 'weight': 10, 'coins': 0, 'ton': '0.0015'},
-    {'label': 'Без виграшу', 'weight': 18, 'coins': 0, 'ton': None},
+    {'label': 'Без виграшу', 'weight': 30, 'coins': 0, 'ton': None},
     {'label': '500 монет', 'weight': 1, 'coins': 500, 'ton': None},
+    {'label': '1000 монет', 'weight': 0.2, 'coins': 1000, 'ton': None},
+    {'label': '0.0050 TON', 'weight': 0.02, 'coins': 0, 'ton': '0.0050'},
+    {'label': '0.0100 TON', 'weight': 0.005, 'coins': 0, 'ton': '0.0100'},
+    {'label': '10000 монет', 'weight': 0.001, 'coins': 10000, 'ton': None},
 ]
 FORTUNE_WHEEL_TOTAL_WEIGHT = sum(p['weight'] for p in FORTUNE_WHEEL_PRIZES)
 

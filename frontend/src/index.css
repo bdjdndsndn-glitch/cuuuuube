@@ -374,9 +374,59 @@
   text-shadow: 0 1px 2px rgba(255, 255, 255, 0.9);
 }
 
+.fortune-wheel-disc--active {
+  transform-origin: center;
+}
+
+.fortune-wheel-prize-label {
+  --wheel-label-offset: max(calc(7px - 31vw), -119px);
+}
+
+.fortune-wheel-halo {
+  background: radial-gradient(circle, rgba(251, 191, 36, 0.42) 0%, rgba(251, 146, 60, 0.18) 34%, rgba(15, 23, 42, 0) 68%);
+  filter: blur(16px);
+  animation: fortune-glow 3.5s ease-in-out infinite alternate;
+}
+
+.fortune-wheel-shine {
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.46), rgba(255, 255, 255, 0.06) 26%, rgba(255, 255, 255, 0.18) 52%, rgba(251, 191, 36, 0.06) 73%, rgba(255, 255, 255, 0) 100%);
+  transform: translateX(-18%) rotate(16deg);
+  animation: fortune-shimmer 4.2s ease-in-out infinite;
+  mix-blend-mode: screen;
+}
+
 .duel-label {
   color: #9f1239;
   text-shadow: 0 1px 2px rgba(255, 255, 255, 0.9);
+}
+
+/* Колесо фортуни вміщується в один viewport навіть на низьких екранах. */
+@media (max-height: 760px) {
+  .fortune-wheel-disc {
+    width: min(62vw, 250px) !important;
+  }
+
+  .fortune-wheel-prize-label {
+    --wheel-label-offset: max(calc(7px - 26vw), -98px);
+  }
+
+  .fortune-wheel-offer {
+    margin-top: 22px !important;
+    padding: 4px 8px !important;
+  }
+
+  .fortune-wheel-meta {
+    margin-top: 8px !important;
+  }
+
+  .fortune-wheel-spin {
+    margin-top: 6px !important;
+  }
+
+  .fortune-wheel-result {
+    margin-top: 6px !important;
+    min-height: 24px !important;
+  }
 }
 
 /* Рівномірний ряд із 4 нижніх іконок у меню: трофей · профіль · завдання · налаштування */
@@ -468,18 +518,43 @@
   }
 }
 
-@keyframes fortune-pop {
+@keyframes fortune-burst {
   0% {
-    transform: translateY(0) scale(0.9);
+    transform: scale(0.6) translateY(0) rotate(0deg);
     opacity: 0.2;
   }
   50% {
-    transform: translateY(-18px) scale(1.15);
+    transform: scale(1.2) translateY(-8px) rotate(20deg);
     opacity: 1;
   }
   100% {
-    transform: translateY(-32px) scale(0.8);
-    opacity: 0.1;
+    transform: scale(0.8) translateY(-18px) rotate(-20deg);
+    opacity: 0.15;
+  }
+}
+
+@keyframes fortune-glow {
+  0% {
+    opacity: 0.7;
+    transform: scale(0.97);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1.06);
+  }
+}
+
+@keyframes fortune-shimmer {
+  0% {
+    transform: translateX(-28%) rotate(18deg) scale(0.96);
+    opacity: 0.15;
+  }
+  35% {
+    opacity: 0.7;
+  }
+  100% {
+    transform: translateX(18%) rotate(18deg) scale(1.08);
+    opacity: 0;
   }
 }
 

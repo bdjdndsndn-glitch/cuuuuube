@@ -55,6 +55,27 @@ export function DuelPanel({ gameState, myUserId, inTelegram, refreshKey, initial
     if (isOpen) loadList();
   }, [isOpen]);
 
+  useEffect(() => {
+    if (!isOpen || !inTelegram || selected?.status === 'finished') return;
+    let active = true;
+    const refresh = () => {
+      if (selected) {
+        void api.duel(selected.code).then((duel) => {
+          if (active) setSelected(duel);
+        }).catch(() => {});
+      } else {
+        void api.duels().then((duels) => {
+          if (active) setList(duels);
+        }).catch(() => {});
+      }
+    };
+    const timer = window.setInterval(refresh, 1000);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
+  }, [inTelegram, isOpen, selected?.code, selected?.status]);
+
   // Відкриття дуелі за deep-link: показуємо її та приєднуємось, якщо є вільне місце
   useEffect(() => {
     if (!initialCode) return;
@@ -96,6 +117,16 @@ export function DuelPanel({ gameState, myUserId, inTelegram, refreshKey, initial
     shareToTelegram(`⚔️ Викликаю тебе на дуель у THE CUBE! Кубик ${d.size}x${d.size}, однакове перемішування — хто швидше?`, duelLink(d.code));
   };
 
+  const copyInvite = async (d: Duel) => {
+    try {
+      await navigator.clipboard.writeText(duelLink(d.code));
+      triggerLayerTurnVibration(20, true);
+      flash('Посилання на дуель скопійовано');
+    } catch {
+      flash('Не вдалося скопіювати посилання');
+    }
+  };
+
   const play = (d: Duel) => {
     triggerLayerTurnVibration(30, true);
     if (startDuel(d.code, d.size, d.moves)) setIsOpen(false);
@@ -133,8 +164,8 @@ export function DuelPanel({ gameState, myUserId, inTelegram, refreshKey, initial
           data-testid="duel-open-button"
           aria-label="Дуелі з друзями"
           title="Дуелі з друзями"
-          className="pointer-events-auto fixed z-40 h-10 overflow-visible rounded-full bg-slate-900/90 hover:bg-slate-800 text-rose-300 shadow-lg border border-rose-400/40 backdrop-blur-sm flex items-center justify-center gap-1 transition-all active:scale-95"
-          style={{ top: 'max(14px, env(safe-area-inset-top, 14px))', right: '14px', padding: streak > 0 ? '0 10px 0 8px' : '0', width: streak > 0 ? 'auto' : '40px' }}
+          className="pointer-events-auto fixed z-40 h-12 overflow-visible rounded-full bg-slate-900/90 hover:bg-slate-800 text-rose-300 shadow-lg border border-rose-400/40 backdrop-blur-sm flex items-center justify-center gap-1 transition-all active:scale-95"
+          style={{ top: 'max(14px, env(safe-area-inset-top, 14px))', right: '14px', padding: streak > 0 ? '0 10px 0 8px' : '0', width: streak > 0 ? 'auto' : '48px' }}
         >
           {swordsIcon}
           <span className="duel-label pointer-events-none absolute left-1/2 top-full mt-1 -translate-x-1/2 whitespace-nowrap text-[9px] font-extrabold uppercase tracking-wide">Дуелі</span>
@@ -201,13 +232,30 @@ export function DuelPanel({ gameState, myUserId, inTelegram, refreshKey, initial
             )}
             {inTelegram && selected.status !== 'finished' && selected.my_role === 'creator' && (
               <>
-                <button
-                  onClick={() => share(selected)}
-                  data-testid="duel-share-button"
-                  className="w-full py-2.5 rounded-2xl bg-sky-500/20 hover:bg-sky-500/30 border border-sky-400/30 text-sky-200 font-bold text-sm active:scale-[0.98] transition-all"
-                >
-                  Поділитися викликом у Telegram
-                </button>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    onClick={() => share(selected)}
+                    data-testid="duel-share-button"
+                    className="flex items-center justify-center gap-1.5 rounded-xl border border-sky-400/30 bg-sky-500/20 px-2 py-2.5 text-xs font-bold text-sky-200 transition-all hover:bg-sky-500/30 active:scale-[0.98]"
+                  >
+                    <svg viewBox="0 0 24 24" className="h-4 w-4 shrink-0" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                      <path d="m22 2-7 20-4-9-9-4Z" />
+                      <path d="M22 2 11 13" />
+                    </svg>
+                    Telegram
+                  </button>
+                  <button
+                    onClick={() => void copyInvite(selected)}
+                    data-testid="duel-copy-button"
+                    className="flex items-center justify-center gap-1.5 rounded-xl border border-white/10 bg-white/5 px-2 py-2.5 text-xs font-bold text-slate-200 transition-all hover:bg-white/10 active:scale-[0.98]"
+                  >
+                    <svg viewBox="0 0 24 24" className="h-4 w-4 shrink-0" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                      <rect x="9" y="9" width="13" height="13" rx="2" />
+                      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+                    </svg>
+                    Копіювати
+                  </button>
+                </div>
                 <button
                   onClick={cancel}
                   disabled={busy}

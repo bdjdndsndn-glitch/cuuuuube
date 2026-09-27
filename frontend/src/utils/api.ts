@@ -92,6 +92,7 @@ export interface Mission {
 
 export interface MissionsData {
   coins: number;
+  ton_balance_nano: number;
   items: Mission[];
 }
 
@@ -102,11 +103,40 @@ export interface AdStatus {
   reward: number;
 }
 
+export interface WalletWithdrawal {
+  request_id: string;
+  coins: number;
+  amount_nano: number;
+  amount_ton: string;
+  wallet_address: string;
+  status: 'pending' | string;
+  requested_at: string;
+}
+
+export interface WalletExchangeResult {
+  exchanged_coins: number;
+  credited_nano: number;
+  ton_balance_nano: number;
+  coins: number;
+}
+
+export interface WalletWithdrawalsData {
+  withdrawals: WalletWithdrawal[];
+}
+
 export interface FortuneWheelResult {
   prize: string;
   coins_awarded: number;
   ton_awarded: string | null;
   coins: number;
+  extra_spins: number;
+  seconds_until_next: number;
+}
+
+export interface FortuneWheelStatus {
+  coins: number;
+  extra_spins: number;
+  fortune_wheel_last_spin_at: string | null;
   seconds_until_next: number;
 }
 
@@ -158,25 +188,54 @@ const RAW_API_BASE = (
 export const API_BASE = RAW_API_BASE;
 const API = `${API_BASE}/api`;
 
-function readApiError(response: Response, fallback: string): string {
+function stringifyApiMessage(value: unknown, fallback: string): string {
+  if (typeof value === 'string' && value.trim()) return value;
+  if (value && typeof value === 'object') {
+    const record = value as Record<string, unknown>;
+    for (const key of ['message', 'msg', 'detail', 'error']) {
+      if (typeof record[key] === 'string' && record[key].trim()) return record[key] as string;
+    }
+    try {
+      return JSON.stringify(value);
+    } catch {
+      return fallback;
+    }
+  }
+  return fallback;
+}
+
+async function readApiError(response: Response, fallback: string): Promise<string> {
   const contentType = response.headers.get('content-type') || '';
+  const text = await response.text().catch(() => '');
+  let body: unknown = null;
+
   if (contentType.includes('application/json') || contentType.includes('+json')) {
-    return response.text().then((text) => {
-      try {
-        const body = JSON.parse(text);
-        return body?.detail || body?.message || fallback;
-      } catch {
-        return fallback;
-      }
-    }).catch(() => fallback);
+    try {
+      body = JSON.parse(text);
+    } catch {
+      body = null;
+    }
   }
 
-  return response.text().then((text) => {
-    if (!text || text.trim().startsWith('<!doctype html') || text.trim().startsWith('<html')) {
-      return 'Backend returned HTML instead of JSON. Check backend URL, routing, and CORS.';
-    }
-    return text.slice(0, 200) || fallback;
-  }).catch(() => fallback);
+  console.error('[API error]', {
+    status: response.status,
+    url: response.url,
+    body: body ?? text,
+  });
+
+  if (response.status === 422) {
+    return 'Не вдалося виконати запит. Перевірте дані та спробуйте ще раз.';
+  }
+
+  if (body && typeof body === 'object') {
+    const parsedBody = body as Record<string, unknown>;
+    return stringifyApiMessage(parsedBody.detail ?? parsedBody.message, fallback);
+  }
+
+  if (!text || text.trim().startsWith('<!doctype html') || text.trim().startsWith('<html')) {
+    return 'Backend returned HTML instead of JSON. Check backend URL, routing, and CORS.';
+  }
+  return text.slice(0, 200) || fallback;
 }
 
 export function getInitData(): string {
@@ -230,7 +289,6 @@ export const api = {
     request<DailyData>('/daily/reminder', { method: 'POST', body: JSON.stringify({ enabled }) }),
   tournament: () => request<TournamentData>('/tournament'),
   achievements: () => request<AchievementsData>('/achievements'),
-  sendTestReminder: () => request<{ sent: boolean }>('/daily/reminder/test', { method: 'POST' }),
   submitScore: (size: number, time_ms: number) =>
     request<ScoreResult>('/scores', { method: 'POST', body: JSON.stringify({ size, time_ms }) }),
   daily: () => request<DailyData>('/daily'),
@@ -238,19 +296,36 @@ export const api = {
     request<DailyData>('/daily/score', { method: 'POST', body: JSON.stringify({ date, time_ms }) }),
   missions: () => request<MissionsData>('/missions'),
   adsgramStatus: () => request<AdStatus>('/adsgram/status'),
+  fortuneWheelStatus: () => request<FortuneWheelStatus>('/fortune-wheel/status'),
   fortuneWheelSpin: () => request<FortuneWheelResult>('/fortune-wheel/spin', { method: 'POST' }),
+  createWalletExchange: (coins: number, wallet_address: string) =>
+    request<WalletExchangeResult>('/wallet/exchange', {
+      method: 'POST',
+      body: JSON.stringify({ coins, wallet_address }),
+    }),
+  walletWithdrawals: () => request<WalletWithdrawalsData>('/wallet/withdrawals'),
+  createWalletWithdrawal: (amount_nano: number, wallet_address: string) =>
+    request<WalletWithdrawal>('/wallet/withdrawals', {
+      method: 'POST',
+      body: JSON.stringify({ amount_nano, wallet_address }),
+    }),
   claimMission: (id: string, wallet_address?: string) =>
     request<MissionsData>(`/missions/${id}/claim`, {
       method: 'POST',
       body: JSON.stringify({ wallet_address: wallet_address ?? null }),
     }),
   sendTestDigest: () => request<{ sent: boolean }>('/digest/test', { method: 'POST' }),
-  rewardSpin: () => request<{ ok: boolean; extra_spins: number; reward_type: string }>('/reward/spin', { method: 'POST' }),
+  rewardSpin: () => request<{ ok: boolean; extra_spins: number; coins: number; coins_awarded: number; reward_type: string }>(
+    '/reward/spin',
+    { method: 'POST', body: JSON.stringify({ reward_type: 'extra_spin' }) },
+  ),
   duels: () => request<Duel[]>('/duels'),
   duelStats: () => request<DuelStats>('/duels/me'),
   duel: (code: string) => request<Duel>(`/duels/${encodeURIComponent(code)}`),
   createDuel: (size: number) => request<Duel>('/duels', { method: 'POST', body: JSON.stringify({ size }) }),
   joinDuel: (code: string) => request<Duel>(`/duels/${encodeURIComponent(code)}/join`, { method: 'POST' }),
+  cancelDuel: (code: string) =>
+    request<{ ok: boolean; code: string }>(`/duels/${encodeURIComponent(code)}/cancel`, { method: 'POST' }),
   submitDuelScore: (code: string, time_ms: number) =>
     request<Duel>(`/duels/${encodeURIComponent(code)}/score`, { method: 'POST', body: JSON.stringify({ time_ms }) }),
 };
