@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -13,6 +14,16 @@ import server
 
 
 VALID_TON_ADDRESS = 'EQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAM9c'
+
+
+def make_friendly_address(account_hash: bytes, tag: int = 0x11) -> str:
+    payload = bytes([tag, 0]) + account_hash
+    checksum = 0
+    for byte in payload:
+        checksum ^= byte << 8
+        for _ in range(8):
+            checksum = ((checksum << 1) ^ 0x1021) & 0xFFFF if checksum & 0x8000 else (checksum << 1) & 0xFFFF
+    return base64.urlsafe_b64encode(payload + checksum.to_bytes(2, 'big')).decode().rstrip('=')
 
 
 class FakePlayers:
@@ -36,8 +47,9 @@ class FakePlayers:
         if any(item.get('status') == 'pending' for item in self.player.get('withdrawal_requests', [])):
             return SimpleNamespace(modified_count=0)
 
-        for field, increment in update['$inc'].items():
+        for field, increment in update.get('$inc', {}).items():
             self.player[field] = self.player.get(field, 0) + increment
+        self.player.update(update.get('$set', {}))
         for field, value in update.get('$push', {}).items():
             history = self.player.setdefault(field, [])
             if '$each' in value:
@@ -55,6 +67,7 @@ def make_player(coins=150_000, ton_balance_nano=0, address=VALID_TON_ADDRESS, wi
         'coins': coins,
         'ton_balance_nano': ton_balance_nano,
         'wallet_address': address,
+        'wallet_address_normalized': server.normalize_ton_address(address),
         'withdrawal_requests': withdrawals or [],
     }
 
@@ -79,6 +92,12 @@ def test_exchange_accepts_one_coin_and_withdrawal_requires_ten_ton():
         server.WalletExchangeIn(coins=1, wallet_address='not-a-ton-address')
 
 
+def test_bounceable_and_non_bounceable_forms_share_canonical_address():
+    bounceable = make_friendly_address(bytes(32), tag=0x11)
+    non_bounceable = make_friendly_address(bytes(32), tag=0x51)
+    assert server.normalize_ton_address(bounceable) == server.normalize_ton_address(non_bounceable)
+
+
 def test_exchange_can_convert_any_positive_amount_and_credits_internal_ton(monkeypatch):
     player = make_player()
     monkeypatch.setattr(server, 'db', SimpleNamespace(players=FakePlayers(player)))
@@ -97,7 +116,7 @@ def test_exchange_can_convert_any_positive_amount_and_credits_internal_ton(monke
 def test_exchange_rejects_unregistered_wallet_without_deducting_coins(monkeypatch):
     player = make_player()
     monkeypatch.setattr(server, 'db', SimpleNamespace(players=FakePlayers(player)))
-    other_address = 'UQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAJKZ'
+    other_address = make_friendly_address(bytes([1]) + bytes(31))
     body = server.WalletExchangeIn(coins=1_000, wallet_address=other_address)
 
     with pytest.raises(HTTPException) as error:
@@ -138,7 +157,8 @@ def test_create_withdrawal_atomically_reserves_ton_balance(monkeypatch):
 def test_withdrawal_rejects_unregistered_wallet(monkeypatch):
     player = make_player(ton_balance_nano=12_000_000_000)
     monkeypatch.setattr(server, 'db', SimpleNamespace(players=FakePlayers(player)))
-    body = server.WalletWithdrawalIn(amount_nano=10_000_000_000, wallet_address='UQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAJKZ')
+    other_address = make_friendly_address(bytes([1]) + bytes(31))
+    body = server.WalletWithdrawalIn(amount_nano=10_000_000_000, wallet_address=other_address)
 
     with pytest.raises(HTTPException) as error:
         asyncio.run(server.create_wallet_withdrawal(body, server.TgUser(id=player['user_id'])))
@@ -146,6 +166,45 @@ def test_withdrawal_rejects_unregistered_wallet(monkeypatch):
     assert error.value.status_code == 409
     assert player['ton_balance_nano'] == 12_000_000_000
     assert player['withdrawal_requests'] == []
+
+
+def test_connected_wallet_sync_updates_stale_saved_address(monkeypatch):
+    player = make_player()
+    monkeypatch.setattr(server, 'db', SimpleNamespace(players=FakePlayers(player)))
+    new_address = make_friendly_address(bytes([1]) + bytes(31))
+
+    result = asyncio.run(server.sync_wallet_address(
+        server.WalletAddressIn(wallet_address=new_address),
+        server.TgUser(id=player['user_id']),
+    ))
+
+    assert result.wallet_address == new_address
+    assert player['wallet_address'] == new_address
+    assert player['wallet_address_normalized'] == server.normalize_ton_address(new_address)
+
+
+def test_connected_wallet_cannot_change_while_withdrawal_is_pending(monkeypatch):
+    pending = {
+        'request_id': 'existing-request',
+        'status': 'pending',
+        'coins': 100_000,
+        'amount_nano': 10_000_000_000,
+        'amount_ton': '10',
+        'wallet_address': VALID_TON_ADDRESS,
+        'requested_at': '2026-01-01T00:00:00+00:00',
+    }
+    player = make_player(withdrawals=[pending])
+    monkeypatch.setattr(server, 'db', SimpleNamespace(players=FakePlayers(player)))
+    new_address = make_friendly_address(bytes([1]) + bytes(31))
+
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(server.sync_wallet_address(
+            server.WalletAddressIn(wallet_address=new_address),
+            server.TgUser(id=player['user_id']),
+        ))
+
+    assert error.value.status_code == 409
+    assert player['wallet_address'] == VALID_TON_ADDRESS
 
 
 def test_second_pending_withdrawal_does_not_deduct_ton_again(monkeypatch):

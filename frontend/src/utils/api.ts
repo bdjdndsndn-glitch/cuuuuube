@@ -124,6 +124,30 @@ export interface WalletWithdrawalsData {
   withdrawals: WalletWithdrawal[];
 }
 
+export interface AdminPlayer {
+  user_id: number;
+  username?: string | null;
+  first_name: string;
+  last_name?: string | null;
+  coins: number;
+  ton_balance_nano: number;
+  extra_spins: number;
+  updated_at?: string | null;
+}
+
+export interface AdminWithdrawal extends WalletWithdrawal {
+  user_id: number;
+  username?: string | null;
+}
+
+export interface AdminOverview {
+  players_total: number;
+  coins_total: number;
+  solves_total: number;
+  duels_total: number;
+  pending_withdrawals: AdminWithdrawal[];
+}
+
 export interface FortuneWheelResult {
   prize: string;
   coins_awarded: number;
@@ -298,6 +322,11 @@ export const api = {
   adsgramStatus: () => request<AdStatus>('/adsgram/status'),
   fortuneWheelStatus: () => request<FortuneWheelStatus>('/fortune-wheel/status'),
   fortuneWheelSpin: () => request<FortuneWheelResult>('/fortune-wheel/spin', { method: 'POST' }),
+  syncWalletAddress: (wallet_address: string) =>
+    request<{ wallet_address: string; wallet_address_normalized: string }>('/wallet/address', {
+      method: 'PUT',
+      body: JSON.stringify({ wallet_address }),
+    }),
   createWalletExchange: (coins: number, wallet_address: string) =>
     request<WalletExchangeResult>('/wallet/exchange', {
       method: 'POST',
@@ -308,6 +337,23 @@ export const api = {
     request<WalletWithdrawal>('/wallet/withdrawals', {
       method: 'POST',
       body: JSON.stringify({ amount_nano, wallet_address }),
+    }),
+  adminOverview: () => request<AdminOverview>('/admin/overview'),
+  adminSearchPlayers: (query: string) => request<{ players: AdminPlayer[] }>(`/admin/players?q=${encodeURIComponent(query)}`),
+  adminAdjustCoins: (userId: number, delta: number, reason: string) =>
+    request<AdminPlayer>(`/admin/players/${userId}/coins`, {
+      method: 'POST',
+      body: JSON.stringify({ delta, reason }),
+    }),
+  adminUpdateWithdrawal: (requestId: string, status: 'completed' | 'rejected', txHash?: string) =>
+    request<AdminWithdrawal>(`/admin/withdrawals/${encodeURIComponent(requestId)}`, {
+      method: 'PUT',
+      body: JSON.stringify({ status, tx_hash: txHash ?? null }),
+    }),
+  adminResetPlayerWheel: (userId: number) =>
+    request<{ ok: boolean; user_id: number; extra_spins: number; reset_last_spin_at: boolean }>(`/admin/players/${userId}/wheel/reset`, {
+      method: 'POST',
+      body: JSON.stringify({ reset_last_spin_at: true }),
     }),
   claimMission: (id: string, wallet_address?: string) =>
     request<MissionsData>(`/missions/${id}/claim`, {

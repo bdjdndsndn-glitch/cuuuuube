@@ -60,8 +60,6 @@ export function TelegramProfileModal({ isOpen, onClose, user, isRealTelegram }: 
   const [tonConnectUI] = useTonConnectUI();
   const wallet = useTonWallet();
   const address = useTonAddress();
-  const rawAddress = useTonAddress(false);
-  const [balance, setBalance] = useState<number | null>(null);
   const [copied, setCopied] = useState(false);
   const [theme, setTheme] = useState<UITheme>(getUITheme());
   const [accent, setAccent] = useState('#38bdf8');
@@ -69,7 +67,6 @@ export function TelegramProfileModal({ isOpen, onClose, user, isRealTelegram }: 
   const [tonBalanceNano, setTonBalanceNano] = useState(0);
   const [exchangeCoins, setExchangeCoins] = useState(0);
   const [country, setCountry] = useState<CountryInfo | null>(null);
-  const [exchangeConfirm, setExchangeConfirm] = useState(false);
   const [exchangeBusy, setExchangeBusy] = useState(false);
   const [exchangeMessage, setExchangeMessage] = useState<string | null>(null);
   const [withdrawConfirm, setWithdrawConfirm] = useState(false);
@@ -132,20 +129,6 @@ export function TelegramProfileModal({ isOpen, onClose, user, isRealTelegram }: 
   }, [isOpen, user?.id]);
 
   useEffect(() => {
-    if (!isOpen || !rawAddress) return;
-    let cancelled = false;
-    setBalance(null);
-    const host = isTestnet ? 'https://testnet.tonapi.io' : 'https://tonapi.io';
-    fetch(`${host}/v2/accounts/${rawAddress}`)
-      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
-      .then((d: { balance?: number }) => !cancelled && setBalance(Number(d.balance ?? 0)))
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-  }, [isOpen, rawAddress, isTestnet]);
-
-  useEffect(() => {
     if (!isOpen || !isRealTelegram) return;
     let cancelled = false;
     api
@@ -169,6 +152,13 @@ export function TelegramProfileModal({ isOpen, onClose, user, isRealTelegram }: 
       cancelled = true;
     };
   }, [isOpen, isRealTelegram]);
+
+  useEffect(() => {
+    if (!isOpen || !isRealTelegram || !wallet || !address) return;
+    void api.syncWalletAddress(address)
+      .then(() => setWithdrawMessage(null))
+      .catch((error: Error) => setWithdrawMessage(error.message || 'Не вдалося оновити підключений гаманець'));
+  }, [address, isOpen, isRealTelegram, wallet]);
 
   const game = getGame();
   const scores = game?.scores?.data || {};
@@ -204,7 +194,6 @@ export function TelegramProfileModal({ isOpen, onClose, user, isRealTelegram }: 
       setCoins(exchange.coins);
       setExchangeCoins(0);
       setTonBalanceNano(exchange.ton_balance_nano);
-      setExchangeConfirm(false);
       setExchangeMessage(`${exchange.exchanged_coins.toLocaleString('uk-UA')} монет обміняно на ${formatTon(exchange.credited_nano)} TON.`);
       triggerLayerTurnVibration(25, true);
     } catch (error) {
@@ -430,10 +419,7 @@ export function TelegramProfileModal({ isOpen, onClose, user, isRealTelegram }: 
                 />
                 <button
                   type="button"
-                  onClick={() => {
-                    setExchangeMessage(null);
-                    setExchangeConfirm(true);
-                  }}
+                  onClick={() => void submitExchange()}
                   disabled={!wallet || exchangeCoins < 1 || exchangeBusy}
                   data-testid="exchange-submit"
                   className="mt-1 w-full rounded-lg border border-amber-300/30 bg-amber-400/15 py-1 text-[10px] font-bold text-amber-100 transition-colors hover:bg-amber-400/25 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-40"
@@ -441,31 +427,6 @@ export function TelegramProfileModal({ isOpen, onClose, user, isRealTelegram }: 
                   {exchangeBusy ? 'Обмінюємо…' : 'Обміняти'}
                 </button>
                 {!wallet && <p className="mt-0.5 text-center text-[9px] text-slate-400">Підключіть збережений гаманець</p>}
-                {exchangeConfirm && (
-                  <div className="mt-1 rounded-lg border border-amber-300/20 bg-slate-950/60 p-2" data-testid="exchange-confirm">
-                    <p className="text-[10px] leading-relaxed text-slate-300">
-                      Обміняти {exchangeCoins.toLocaleString('uk-UA')} монет на {coinsToTon(exchangeCoins)} TON і зарахувати на внутрішній TON-баланс? Виведення доступне окремо від 10 TON.
-                    </p>
-                    <div className="mt-1.5 flex gap-1.5">
-                      <button
-                        type="button"
-                        onClick={submitExchange}
-                        disabled={exchangeBusy}
-                        className="flex-1 rounded-md border border-amber-200/25 bg-amber-400/20 px-2 py-1 text-[10px] font-bold text-amber-100 disabled:opacity-50"
-                      >
-                        Підтвердити
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setExchangeConfirm(false)}
-                        disabled={exchangeBusy}
-                        className="rounded-md border border-white/10 bg-white/5 px-2 py-1 text-[10px] font-semibold text-slate-300 disabled:opacity-50"
-                      >
-                        Скасувати
-                      </button>
-                    </div>
-                  </div>
-                )}
                 {exchangeMessage && <p className="mt-1 text-center text-[9px] leading-relaxed text-amber-100" role="status">{exchangeMessage}</p>}
               </div>
             </div>
@@ -479,7 +440,7 @@ export function TelegramProfileModal({ isOpen, onClose, user, isRealTelegram }: 
                 <span className="text-[11px] font-bold truncate">Гаманець TON</span>
                 {wallet && <span className="text-[8px] bg-sky-500/20 text-sky-300 px-1.5 py-0.5 rounded font-mono shrink-0">{isTestnet ? 'Testnet' : 'Mainnet'}</span>}
               </div>
-              {wallet && <span className="text-[9px] text-emerald-400 flex items-center gap-1 shrink-0"><span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />Активний</span>}
+              {wallet && <span className="text-[9px] text-emerald-400 flex items-center gap-1 shrink-0"><span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />Підключено</span>}
             </div>
             {wallet ? (
               <>
@@ -487,8 +448,9 @@ export function TelegramProfileModal({ isOpen, onClose, user, isRealTelegram }: 
                   <button onClick={handleCopy} className="font-mono text-[11px] text-sky-200 bg-black/30 px-2 py-1 rounded-lg border border-white/5 hover:border-sky-500/30 transition-colors" data-testid="wallet-address">
                     {copied ? '✓ Скопійовано' : shortAddress(address)}
                   </button>
-                  <span className="text-sm font-black" data-testid="wallet-balance">
-                    {balance !== null ? <>{formatTon(balance)} <span className="text-[11px] text-sky-300">TON</span></> : <span className="text-[11px] text-slate-400 animate-pulse">…</span>}
+                  <span className="text-right" data-testid="wallet-balance">
+                    <span className="block text-[8px] uppercase tracking-wide text-slate-400">До виведення</span>
+                    <span className="text-sm font-black text-sky-200">{formatTon(tonBalanceNano)} <span className="text-[11px] text-sky-300">TON</span></span>
                   </span>
                 </div>
                 <button

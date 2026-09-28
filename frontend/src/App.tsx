@@ -9,6 +9,7 @@ import { GestureIndicator } from './components/GestureIndicator';
 import { CubeProgressIndicator } from './components/CubeProgressIndicator';
 import { BackgroundMusic } from './components/BackgroundMusic';
 import { TelegramGameControls } from './components/TelegramGameControls';
+import { AdminPanel } from './components/AdminPanel';
 import {
   getHapticIndex,
   setHapticFromIndex,
@@ -284,6 +285,10 @@ export default function App() {
       if (hapticTimer) clearInterval(hapticTimer);
     };
   }, []);
+
+  if (typeof window !== 'undefined' && window.location.pathname.replace(/\/+$/, '') === '/admin') {
+    return <AdminPanel />;
+  }
 
   // Маніфест TON Connect для підключення Tonkeeper
   const manifestUrl =

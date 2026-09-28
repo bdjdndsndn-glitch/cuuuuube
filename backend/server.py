@@ -1,6 +1,8 @@
 from fastapi import FastAPI, APIRouter, Header, HTTPException, Depends, Query
 from fastapi.responses import Response
 import asyncio
+import base64
+import binascii
 from bson import Binary
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
@@ -12,9 +14,10 @@ import json
 import random
 import secrets
 import logging
+import re
 from pathlib import Path
-from pydantic import BaseModel, Field
-from typing import Optional, List
+from pydantic import BaseModel, Field, field_validator
+from typing import Optional, List, Literal
 from datetime import datetime, timezone, timedelta
 from urllib.parse import parse_qsl
 from zoneinfo import ZoneInfo
@@ -81,6 +84,22 @@ async def current_user(x_telegram_init_data: str = Header(default='')) -> TgUser
     user = verify_init_data(x_telegram_init_data)
     await touch_player(user, parse_init_data(x_telegram_init_data).get('start_param'))
     return user
+
+
+def require_admin_user(x_telegram_init_data: str = Header(default='')) -> TgUser:
+    configured_ids = {
+        int(value.strip())
+        for value in os.environ.get('ADMIN_TELEGRAM_USER_IDS', '').split(',')
+        if value.strip().isdigit()
+    }
+    if not configured_ids:
+        raise HTTPException(status_code=503, detail='Admin access is not configured')
+    if not x_telegram_init_data:
+        raise HTTPException(status_code=401, detail='Open the admin panel inside Telegram')
+    admin = verify_init_data(x_telegram_init_data)
+    if admin.id not in configured_ids:
+        raise HTTPException(status_code=403, detail='Admin access required')
+    return admin
 
 
 AVATAR_TTL = 24 * 3600
@@ -835,12 +854,47 @@ class ClaimIn(BaseModel):
 TON_NANO_PER_COIN = 100_000
 MIN_WITHDRAWAL_NANO = 10_000_000_000
 MAX_EXCHANGE_COINS = (2**63 - 1) // TON_NANO_PER_COIN
-TON_ADDRESS_PATTERN = r'^(?:EQ|UQ|kQ|0Q)[A-Za-z0-9_-]{46}$'
+TON_ADDRESS_PATTERN = r'^[A-Za-z0-9_-]{48}$'
+
+
+def normalize_ton_address(address: str) -> str:
+    value = address.strip()
+    raw_parts = value.split(':')
+    if len(raw_parts) == 2 and raw_parts[0] in {'0', '-1'} and len(raw_parts[1]) == 64:
+        try:
+            account_hash = bytes.fromhex(raw_parts[1])
+        except ValueError as error:
+            raise ValueError('Некоректна TON-адреса') from error
+        return f'{int(raw_parts[0])}:{account_hash.hex()}'
+
+    try:
+        decoded = base64.urlsafe_b64decode(value + '=' * (-len(value) % 4))
+    except (ValueError, binascii.Error) as error:
+        raise ValueError('Некоректна TON-адреса') from error
+    if len(decoded) != 36 or decoded[0] & 0x7F not in {0x11, 0x51}:
+        raise ValueError('Некоректна TON-адреса')
+
+    checksum = 0
+    for byte in decoded[:34]:
+        checksum ^= byte << 8
+        for _ in range(8):
+            checksum = ((checksum << 1) ^ 0x1021) & 0xFFFF if checksum & 0x8000 else (checksum << 1) & 0xFFFF
+    if decoded[34:36] != checksum.to_bytes(2, 'big'):
+        raise ValueError('Контрольна сума TON-адреси не збігається')
+
+    workchain = int.from_bytes(decoded[1:2], 'big', signed=True)
+    return f'{workchain}:{decoded[2:34].hex()}'
 
 
 class WalletExchangeIn(BaseModel):
     coins: int = Field(ge=1, le=MAX_EXCHANGE_COINS)
     wallet_address: str = Field(min_length=48, max_length=48, pattern=TON_ADDRESS_PATTERN)
+
+    @field_validator('wallet_address')
+    @classmethod
+    def validate_ton_address(cls, value: str) -> str:
+        normalize_ton_address(value)
+        return value
 
 
 class WalletExchangeOut(BaseModel):
@@ -853,6 +907,27 @@ class WalletExchangeOut(BaseModel):
 class WalletWithdrawalIn(BaseModel):
     amount_nano: int = Field(ge=MIN_WITHDRAWAL_NANO, le=2**63 - 1)
     wallet_address: str = Field(min_length=48, max_length=48, pattern=TON_ADDRESS_PATTERN)
+
+    @field_validator('wallet_address')
+    @classmethod
+    def validate_ton_address(cls, value: str) -> str:
+        normalize_ton_address(value)
+        return value
+
+
+class WalletAddressIn(BaseModel):
+    wallet_address: str = Field(min_length=48, max_length=48, pattern=TON_ADDRESS_PATTERN)
+
+    @field_validator('wallet_address')
+    @classmethod
+    def validate_ton_address(cls, value: str) -> str:
+        normalize_ton_address(value)
+        return value
+
+
+class WalletAddressOut(BaseModel):
+    wallet_address: str
+    wallet_address_normalized: str
 
 
 class WalletWithdrawalOut(BaseModel):
@@ -935,13 +1010,52 @@ async def claim_mission(mission_id: str, body: ClaimIn, user: TgUser = Depends(c
     return missions_payload(int(p2.get('coins', 0)), set(p2.get('completed_missions', [])), int(p2.get('ton_balance_nano', 0)))
 
 
+@api_router.put('/wallet/address', response_model=WalletAddressOut)
+async def sync_wallet_address(body: WalletAddressIn, user: TgUser = Depends(current_user)):
+    normalized = normalize_ton_address(body.wallet_address)
+    player = await db.players.find_one(
+        {'user_id': user.id},
+        {'_id': 0, 'wallet_address': 1, 'wallet_address_normalized': 1, 'withdrawal_requests': 1},
+    ) or {}
+    stored_normalized = player.get('wallet_address_normalized')
+    if not stored_normalized and player.get('wallet_address'):
+        try:
+            stored_normalized = normalize_ton_address(player['wallet_address'])
+        except ValueError:
+            stored_normalized = None
+    has_pending = any(request.get('status') == 'pending' for request in player.get('withdrawal_requests', []))
+    if has_pending and stored_normalized != normalized:
+        raise HTTPException(status_code=409, detail='Не можна змінити гаманець, поки заявка на виведення очікує обробки')
+
+    if stored_normalized != normalized or player.get('wallet_address_normalized') != normalized:
+        result = await db.players.update_one(
+            {
+                'user_id': user.id,
+                'wallet_address': player.get('wallet_address'),
+                'withdrawal_requests': {'$not': {'$elemMatch': {'status': 'pending'}}},
+            },
+            {'$set': {'wallet_address': body.wallet_address, 'wallet_address_normalized': normalized}},
+        )
+        if result.modified_count == 0:
+            raise HTTPException(status_code=409, detail='Стан гаманця змінився. Оновіть профіль і спробуйте ще раз')
+
+    return WalletAddressOut(wallet_address=body.wallet_address, wallet_address_normalized=normalized)
+
+
 @api_router.post('/wallet/exchange', response_model=WalletExchangeOut)
 async def exchange_wallet_coins(body: WalletExchangeIn, user: TgUser = Depends(current_user)):
     player = await db.players.find_one(
         {'user_id': user.id},
         {'_id': 0, 'coins': 1, 'ton_balance_nano': 1, 'wallet_address': 1},
     ) or {}
-    if player.get('wallet_address') != body.wallet_address:
+    stored_normalized = player.get('wallet_address_normalized')
+    if not stored_normalized and player.get('wallet_address'):
+        try:
+            stored_normalized = normalize_ton_address(player['wallet_address'])
+        except ValueError:
+            stored_normalized = None
+    requested_normalized = normalize_ton_address(body.wallet_address)
+    if stored_normalized != requested_normalized:
         raise HTTPException(status_code=409, detail='Адреса не збігається зі збереженим гаманцем')
 
     credited_nano = body.coins * TON_NANO_PER_COIN
@@ -953,7 +1067,11 @@ async def exchange_wallet_coins(body: WalletExchangeIn, user: TgUser = Depends(c
         'created_at': datetime.now(timezone.utc).isoformat(),
     }
     result = await db.players.update_one(
-        {'user_id': user.id, 'wallet_address': body.wallet_address, 'coins': {'$gte': body.coins}},
+        {
+            'user_id': user.id,
+            'wallet_address': player.get('wallet_address'),
+            'coins': {'$gte': body.coins},
+        },
         {
             '$inc': {'coins': -body.coins, 'ton_balance_nano': credited_nano},
             '$push': {'coin_exchanges': {'$each': [exchange], '$slice': -500}},
@@ -980,7 +1098,14 @@ async def create_wallet_withdrawal(body: WalletWithdrawalIn, user: TgUser = Depe
         {'user_id': user.id},
         {'_id': 0, 'ton_balance_nano': 1, 'wallet_address': 1, 'withdrawal_requests': 1},
     ) or {}
-    if player.get('wallet_address') != body.wallet_address:
+    stored_normalized = player.get('wallet_address_normalized')
+    if not stored_normalized and player.get('wallet_address'):
+        try:
+            stored_normalized = normalize_ton_address(player['wallet_address'])
+        except ValueError:
+            stored_normalized = None
+    requested_normalized = normalize_ton_address(body.wallet_address)
+    if stored_normalized != requested_normalized:
         raise HTTPException(status_code=409, detail='Адреса не збігається з підключеним і збереженим гаманцем')
     if any(request.get('status') == 'pending' for request in player.get('withdrawal_requests', [])):
         raise HTTPException(status_code=409, detail='У вас уже є заявка на виведення, що очікує обробки')
@@ -1000,7 +1125,7 @@ async def create_wallet_withdrawal(body: WalletWithdrawalIn, user: TgUser = Depe
     result = await db.players.update_one(
         {
             'user_id': user.id,
-            'wallet_address': body.wallet_address,
+            'wallet_address': player.get('wallet_address'),
             'ton_balance_nano': {'$gte': body.amount_nano},
             'withdrawal_requests': {'$not': {'$elemMatch': {'status': 'pending'}}},
         },
@@ -1414,6 +1539,194 @@ async def fortune_wheel_spin(user: TgUser = Depends(current_user)):
         extra_spins=int(player.get('extra_spins', 0)),
         seconds_until_next=FORTUNE_WHEEL_COOLDOWN,
     )
+
+
+class AdminPlayerOut(BaseModel):
+    user_id: int
+    username: Optional[str] = None
+    first_name: str = ''
+    last_name: Optional[str] = None
+    coins: int = 0
+    ton_balance_nano: int = 0
+    extra_spins: int = 0
+    updated_at: Optional[str] = None
+
+
+class AdminPlayersOut(BaseModel):
+    players: List[AdminPlayerOut]
+
+
+class AdminAdjustmentIn(BaseModel):
+    delta: int = Field(ge=-1_000_000_000, le=1_000_000_000)
+    reason: str = Field(min_length=3, max_length=200)
+
+    @field_validator('delta')
+    @classmethod
+    def nonzero_delta(cls, value: int) -> int:
+        if value == 0:
+            raise ValueError('Delta must not be zero')
+        return value
+
+
+class AdminWithdrawalOut(WalletWithdrawalOut):
+    user_id: int
+    username: Optional[str] = None
+
+
+class AdminOverviewOut(BaseModel):
+    players_total: int
+    coins_total: int
+    solves_total: int
+    duels_total: int
+    pending_withdrawals: List[AdminWithdrawalOut]
+
+
+class AdminWithdrawalUpdateIn(BaseModel):
+    status: Literal['completed', 'rejected']
+    tx_hash: Optional[str] = Field(default=None, min_length=8, max_length=160)
+
+
+class AdminWheelResetIn(BaseModel):
+    reset_last_spin_at: bool = True
+
+
+@api_router.get('/admin/overview', response_model=AdminOverviewOut)
+async def admin_overview(admin: TgUser = Depends(require_admin_user)):
+    coin_totals = await db.players.aggregate([
+        {'$group': {'_id': None, 'total': {'$sum': {'$ifNull': ['$coins', 0]}}}},
+    ]).to_list(1)
+    pending_players = await db.players.find(
+        {'withdrawal_requests.status': 'pending'},
+        {'_id': 0, 'user_id': 1, 'username': 1, 'withdrawal_requests': 1},
+    ).limit(100).to_list(100)
+    pending = [
+        AdminWithdrawalOut(user_id=player['user_id'], username=player.get('username'), **request)
+        for player in pending_players
+        for request in player.get('withdrawal_requests', [])
+        if request.get('status') == 'pending'
+    ][:100]
+    return AdminOverviewOut(
+        players_total=await db.players.count_documents({}),
+        coins_total=int(coin_totals[0]['total']) if coin_totals else 0,
+        solves_total=await db.solves.count_documents({}),
+        duels_total=await db.duels.count_documents({}),
+        pending_withdrawals=pending,
+    )
+
+
+@api_router.get('/admin/players', response_model=AdminPlayersOut)
+async def admin_search_players(
+    q: str = Query(default='', max_length=80),
+    admin: TgUser = Depends(require_admin_user),
+):
+    query = {}
+    term = q.strip()
+    if term:
+        if term.isdigit():
+            query = {'user_id': int(term)}
+        else:
+            pattern = re.compile(re.escape(term), re.IGNORECASE)
+            query = {'$or': [{'username': pattern}, {'first_name': pattern}, {'last_name': pattern}]}
+    players = await db.players.find(
+        query,
+        {'_id': 0, 'user_id': 1, 'username': 1, 'first_name': 1, 'last_name': 1,
+         'coins': 1, 'ton_balance_nano': 1, 'extra_spins': 1, 'updated_at': 1},
+    ).sort('coins', -1).limit(50).to_list(50)
+    return AdminPlayersOut(players=[AdminPlayerOut(**player) for player in players])
+
+
+@api_router.post('/admin/players/{user_id}/coins', response_model=AdminPlayerOut)
+async def admin_adjust_player_coins(
+    user_id: int,
+    body: AdminAdjustmentIn,
+    admin: TgUser = Depends(require_admin_user),
+):
+    query = {'user_id': user_id}
+    if body.delta < 0:
+        query['coins'] = {'$gte': -body.delta}
+    adjustment = {
+        'adjustment_id': secrets.token_hex(12),
+        'admin_id': admin.id,
+        'delta': body.delta,
+        'reason': body.reason.strip(),
+        'created_at': datetime.now(timezone.utc).isoformat(),
+    }
+    result = await db.players.update_one(
+        query,
+        {
+            '$inc': {'coins': body.delta},
+            '$set': {'updated_at': datetime.now(timezone.utc).isoformat()},
+            '$push': {'coin_adjustments': {'$each': [adjustment], '$slice': -200}},
+        },
+    )
+    if result.modified_count == 0:
+        exists = await db.players.find_one({'user_id': user_id}, {'_id': 1})
+        if not exists:
+            raise HTTPException(status_code=404, detail='Гравця не знайдено')
+        raise HTTPException(status_code=409, detail='Недостатньо монет для такого списання')
+    player = await db.players.find_one(
+        {'user_id': user_id},
+        {'_id': 0, 'user_id': 1, 'username': 1, 'first_name': 1, 'last_name': 1,
+         'coins': 1, 'ton_balance_nano': 1, 'extra_spins': 1, 'updated_at': 1},
+    )
+    return AdminPlayerOut(**player)
+
+
+@api_router.put('/admin/withdrawals/{request_id}', response_model=AdminWithdrawalOut)
+async def admin_update_withdrawal(
+    request_id: str,
+    body: AdminWithdrawalUpdateIn,
+    admin: TgUser = Depends(require_admin_user),
+):
+    player = await db.players.find_one(
+        {'withdrawal_requests': {'$elemMatch': {'request_id': request_id, 'status': 'pending'}}},
+        {'_id': 0, 'user_id': 1, 'username': 1, 'withdrawal_requests': 1},
+    )
+    if not player:
+        raise HTTPException(status_code=404, detail='Активну заявку не знайдено')
+    withdrawal = next(
+        item for item in player['withdrawal_requests']
+        if item.get('request_id') == request_id and item.get('status') == 'pending'
+    )
+    if body.status == 'completed' and not body.tx_hash:
+        raise HTTPException(status_code=422, detail='Для завершеної виплати потрібен tx hash')
+
+    fields = {
+        'withdrawal_requests.$[request].status': body.status,
+        'withdrawal_requests.$[request].processed_at': datetime.now(timezone.utc).isoformat(),
+        'withdrawal_requests.$[request].processed_by': admin.id,
+    }
+    if body.tx_hash:
+        fields['withdrawal_requests.$[request].tx_hash'] = body.tx_hash.strip()
+    update = {'$set': fields}
+    if body.status == 'rejected':
+        update['$inc'] = {'ton_balance_nano': int(withdrawal['amount_nano'])}
+    result = await db.players.update_one(
+        {'user_id': player['user_id'], 'withdrawal_requests': {'$elemMatch': {'request_id': request_id, 'status': 'pending'}}},
+        update,
+        array_filters=[{'request.request_id': request_id, 'request.status': 'pending'}],
+    )
+    if result.modified_count == 0:
+        raise HTTPException(status_code=409, detail='Заявку вже оброблено')
+    withdrawal['status'] = body.status
+    if body.tx_hash:
+        withdrawal['tx_hash'] = body.tx_hash.strip()
+    return AdminWithdrawalOut(user_id=player['user_id'], username=player.get('username'), **withdrawal)
+
+
+@api_router.post('/admin/players/{user_id}/wheel/reset')
+async def admin_reset_player_wheel(
+    user_id: int,
+    body: AdminWheelResetIn,
+    admin: TgUser = Depends(require_admin_user),
+):
+    update = {'$set': {'extra_spins': 0}}
+    if body.reset_last_spin_at:
+        update['$unset'] = {'fortune_wheel_last_spin_at': ''}
+    result = await db.players.update_one({'user_id': user_id}, update)
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail='Гравця не знайдено')
+    return {'ok': True, 'user_id': user_id, 'extra_spins': 0, 'reset_last_spin_at': body.reset_last_spin_at}
 
 
 @api_router.post('/admin/reset-wheel-spins')
